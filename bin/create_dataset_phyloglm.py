@@ -1,69 +1,111 @@
-import sys
+#!/usr/bin/env python3
+"""
+Create the per-cluster input table for phyloglm.
+
+Inputs (both written by rf_model_v3.py):
+  feature_df : <cluster>_Feature_importance.tsv   columns: feature, gini_imp, cluster_num
+  data_df    : <cluster>_data_df.tsv               columns: gene, <one-hot MSA features...>, biome
+
+Outputs:
+  -o <cluster>_phyloglm_dataset.tsv : gene | ecosystem_subtype_<target> (0/1) | features (by gini, descending)
+  <cluster>_gini.tsv                : feature | gini
+"""
+
 import argparse
+import re
+import sys
+from pathlib import Path
+
 import pandas as pd
-import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
 
 parser = argparse.ArgumentParser(description="Create dataset for PhyloGLM")
-parser.add_argument("feature_df", help="Path to the feature.tsv file")
-parser.add_argument("biome_file", help="Path to the data_df.tsv file (RF model output: gene, features..., biome)")
-parser.add_argument("-o", "--output", default="output_dataset.tsv", help="Output file path")
-parser.add_argument("-r", "--reference_biome", default="Lake",
-                     help="Last ';'-segment of the biome string to treat as the baseline/reference "
-                          "class (e.g. 'Lake'); whichever of the two biomes present does NOT end in "
-                          "this becomes the phyloglm target/response (default: Lake)")
+parser.add_argument("feature_df", help="<cluster>_Feature_importance.tsv from rf_model_v3.py")
+parser.add_argument("data_df", help="<cluster>_data_df.tsv from rf_model_v3.py")
+parser.add_argument("-o", "--output", default="output_phyloglm_dataset.tsv", help="Output dataset path")
+parser.add_argument("--target_biome", default=None,
+                    help="Biome coded as 1 (full label or the part after the last ';'). "
+                         "Default: the alphabetically last of the two biomes")
+parser.add_argument("--gini_output", default=None,
+                    help="Gini lookup path (default: derived from --output)")
 args = parser.parse_args()
 
-feat_imp_df = pd.read_csv(args.feature_df, sep='\t', usecols=[0,1],names=['col_name','feature_importance_vals'], dtype={'col_name':'str','feature_importance_vals':np.float64},header=0) 
-#print(feat_imp_df.shape)
-x = len(feat_imp_df)
-top_50_ft_df = feat_imp_df.head(n=x)
-#top_50_ft_df
 
-# feat_imp_df.loc[feat_imp_df['feature_importance_vals'] >= 0.00001]
+def short(label):
+    return label.split(";")[-1].strip()
 
-df_data = pd.read_csv(args.biome_file, sep='\t')
-#print(df_data)
-df_data.drop_duplicates('gene',inplace=True)
 
-df_biome = df_data[["gene","biome"]]
-# df_biome.to_csv("comb_cluster_biome.tsv", sep='\t', index=False)
-df_biome_num = pd.get_dummies(df_biome.set_index("gene"), dtype=int)
-#print(df_biome_num)
+def safe(name):
+    # column-name-safe version of a biome label, e.g. "Hot (42-90C)" -> "Hot_42_90C"
+    return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")
 
-# get all values of biome (full ";"-delimited strings), choose the one whose
-# LAST segment is not the reference biome (e.g. not "Lake"). biome is now the
-# full hierarchy path, so we compare against its last segment rather than the
-# whole string — this expects exactly 2 biome classes per group, since
-# phyloglm needs a binary response.
-unique_biomes = df_biome['biome'].dropna().unique()
-if len(unique_biomes) != 2:
-    sys.exit(
-        f"Expected exactly 2 biome classes for a pairwise phyloglm comparison, "
-        f"found {len(unique_biomes)}: {list(unique_biomes)}"
-    )
 
-def last_segment(biome_str):
-    return biome_str.split(';')[-1]
+# ---------------------------------------------------------------
+# Feature importances (already sorted by rf_model_v3.py; sort again to be safe)
+# ---------------------------------------------------------------
+feat = pd.read_csv(args.feature_df, sep="\t")
+feat = feat.rename(columns={feat.columns[0]: "feature", feat.columns[1]: "gini"})[["feature", "gini"]]
+feat["feature"] = feat["feature"].astype(str)
+feat = feat.drop_duplicates("feature").sort_values("gini", ascending=False)
 
-non_reference_biomes = [b for b in unique_biomes if last_segment(b) != args.reference_biome]
-if len(non_reference_biomes) != 1:
-    sys.exit(
-        f"Could not find exactly one non-reference biome (reference='{args.reference_biome}'). "
-        f"Biomes present: {list(unique_biomes)}"
-    )
-target_biome = non_reference_biomes[0]
-target_col = f"biome_{target_biome}"
+# ---------------------------------------------------------------
+# Data table: one row per gene, one-hot features + biome label
+# ---------------------------------------------------------------
+data = pd.read_csv(args.data_df, sep="\t")
+if "gene" not in data.columns:                      # index column written without a name
+    data = data.rename(columns={data.columns[0]: "gene"})
+if "biome" not in data.columns:
+    sys.exit(f"ERROR: no 'biome' column in {args.data_df}. Columns start with: {list(data.columns[:5])}")
 
-df_data_filtered = df_data[["gene"] + [col for col in top_50_ft_df['col_name'] if col in df_data.columns]]
-df_data_filtered_merged = df_biome_num[[target_col]].join(df_data_filtered.set_index("gene"),how="left")
-df_data_filtered_merged.reset_index(inplace=True)
-#print(df_data_filtered_merged)
+data = data.drop_duplicates("gene").set_index("gene")
+data = data[data["biome"].notna() & (data["biome"] != "unknown")]
 
-# save look up table with feature and gini
-gini_lookup = top_50_ft_df.rename(columns={'col_name': 'feature', 'feature_importance_vals': 'gini'})
-gini_output = args.output.replace('_phyloglm_dataset.tsv', '_gini.tsv')
-gini_lookup.to_csv(gini_output, sep='\t', index=False)
+biomes = sorted(data["biome"].unique())
+if len(biomes) != 2:
+    sys.exit(f"ERROR: phyloglm needs exactly 2 biomes, found {len(biomes)}: "
+             f"{data['biome'].value_counts().to_dict()}")
 
-df_data_filtered_merged.to_csv(args.output, sep='\t', index=False)
+# Which biome is 1 (target) and which is 0 (reference)
+if args.target_biome:
+    matches = [b for b in biomes
+               if b == args.target_biome or short(b) == short(args.target_biome)]
+    if len(matches) != 1:
+        sys.exit(f"ERROR: --target_biome '{args.target_biome}' matches {len(matches)} of {biomes}")
+    target = matches[0]
+else:
+    target = biomes[1]
+reference = biomes[0] if target == biomes[1] else biomes[1]
+target_col = f"ecosystem_subtype_{safe(short(target))}"
+
+# ---------------------------------------------------------------
+# Keep features that exist in the data, in gini order
+# ---------------------------------------------------------------
+features = [f for f in feat["feature"] if f in data.columns]
+n_missing = len(feat) - len(features)
+if n_missing:
+    print(f"WARNING: {n_missing} feature(s) from {args.feature_df} not found in {args.data_df}",
+          file=sys.stderr)
+if not features:
+    sys.exit("ERROR: none of the features in the importance table are columns of the data table")
+
+dataset = pd.DataFrame({target_col: (data["biome"] == target).astype(int)}, index=data.index)
+dataset = dataset.join(data[features])
+dataset.reset_index().to_csv(args.output, sep="\t", index=False)
+
+# ---------------------------------------------------------------
+# Gini lookup table (feature | gini), same features as the dataset
+# ---------------------------------------------------------------
+if args.gini_output:
+    gini_out = Path(args.gini_output)
+else:
+    out = Path(args.output)
+    stem = out.name.replace("_phyloglm_dataset.tsv", "")
+    if stem == out.name:                            # output didn't follow the naming scheme
+        stem = out.stem
+    gini_out = out.with_name(f"{stem}_gini.tsv")
+
+feat[feat["feature"].isin(features)].to_csv(gini_out, sep="\t", index=False)
+
+counts = dataset[target_col].value_counts()
+print(f"Target (1): {target}  n={counts.get(1, 0)}", file=sys.stderr)
+print(f"Reference (0): {reference}  n={counts.get(0, 0)}", file=sys.stderr)
+print(f"Features written: {len(features)}  -> {args.output}, {gini_out}", file=sys.stderr)

@@ -77,7 +77,7 @@ def parse_seqs_and_metadata(fasta_path, metadata_path):
     data_df_numerical, feature_names = remove_zero_variance_features(data_df_numerical, all_feature_names)
     num_features = len(feature_names)
 
-    biomes_metadata_df = pd.read_csv(metadata_path, header=None, sep='\t', names=['gene', 'biome'])
+    biomes_metadata_df = pd.read_csv(metadata_path, sep='\t', usecols=['gene', 'biome'])
     biomes_metadata_df['gene'] = biomes_metadata_df['gene'].str.strip()
     # normalize biome delimiter — some metadata files use ":" instead of ";";
     # without this, "A:B:C" and "A;B;C" would be treated as different classes.
@@ -112,7 +112,7 @@ def parse_seqs_and_metadata(fasta_path, metadata_path):
 
     # drop rows with no biome label now, so X and y stay aligned downstream
     data_df_merged = data_df_merged.dropna(subset=['biome'])
-
+    data_df_merged = data_df_merged[data_df_merged['biome'] != 'unknown']
     # --- drop biome classes too small to stratify ---
     # StratifiedKFold(n_splits=5) needs >=5 members per class, and the initial
     # 80/20 train_test_split needs >=2. Rather than crashing the whole task
