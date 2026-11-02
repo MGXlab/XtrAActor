@@ -51,6 +51,27 @@ def remove_zero_variance_features(data_df_numerical, feature_names):
     return data_df_numerical, remaining_feature_names
 
 
+MAX_RATIO = 3.0   # majority:minority ratio after downsampling (1.0 = fully balanced, 2.0 = at most 2:1)
+
+def downsample_majority(data_df_merged, label_col='biome', random_state=42):
+    """
+    Randomly downsample larger biome classes so no class has more than
+    MAX_RATIO x the members of the smallest class. Used for RF training only;
+    the full data_df is still written out for phyloglm.
+    """
+    counts = data_df_merged[label_col].value_counts()
+    n_max = int(counts.min() * MAX_RATIO)
+    if counts.max() <= n_max:
+        return data_df_merged
+
+    balanced = (
+        data_df_merged.groupby(label_col, group_keys=False)
+        .apply(lambda g: g.sample(n=min(len(g), n_max), random_state=random_state))
+    )
+    print(f"Downsampling for RF: {counts.to_dict()} -> "
+          f"{balanced[label_col].value_counts().to_dict()}")
+    return balanced
+
 def parse_seqs_and_metadata(fasta_path, metadata_path):
     """
     fasta_path: per-group MSA fasta file (e.g. group_XX_mafft_aa.fa), one
@@ -140,16 +161,26 @@ def parse_seqs_and_metadata(fasta_path, metadata_path):
 
 
 def run_the_classifier(data_df_merged, num_features, feature_names):
+    """
+    In order to use as much data as possible from each biome, 
+    class balancing is done INSIDE each split. The training part is
+    downsampled (see downsample_majority / MAX_RATIO); every test part keeps
+    the real class mix (not downsampled - ratio of the real data stays). 
+    Performance is reported as balanced accuracy.
+    """
 
     X = data_df_merged.iloc[:, 0:num_features]     # features
-    y_labels = data_df_merged['biome']              # full biome string, for stratification
-    y = pd.get_dummies(y_labels, dtype=int)          # one-hot, for fitting
+    y_labels = data_df_merged['biome']              # full biome string: used for fitting AND stratification
+    classes = sorted(y_labels.unique())             # fixed class order for report / confusion matrix
 
     # --- HYPERPARAMETER SEARCH ---
-    # done once, on a single 80/20 split, purely to pick hyperparameters
+    # done once, on a single 80/20 split, purely to pick hyperparameters;
+    # the 80 % training part is balanced, the search scores by balanced accuracy
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, train_size=0.8, test_size=0.2, stratify=y, random_state=42
+        X, y_labels, train_size=0.8, test_size=0.2, stratify=y_labels, random_state=42
     )
+    train_bal = downsample_majority(data_df_merged.loc[X_train.index])
+    X_train_bal, y_train_bal = X.loc[train_bal.index], y_labels.loc[train_bal.index]
 
     param_grid = {
         'max_depth': [5, 10, None],
@@ -159,30 +190,41 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
         'n_estimators': [1000, 2000, 5000],
         'class_weight': ['balanced', None]}
 
+    # inner CV of the search needs >= n_splits members per class
+    inner_cv = max(2, min(5, int(y_train_bal.value_counts().min())))
+
     # n_jobs=-1 here parallelizes the search across hyperparameter
     # candidates/CV folds
     random_search = RandomizedSearchCV(
-        RandomForestClassifier(random_state=42), param_grid, random_state=42, n_jobs=-1
+        RandomForestClassifier(random_state=42), param_grid,
+        scoring='balanced_accuracy', cv=inner_cv, random_state=42, n_jobs=-1
     )
-    random_search.fit(X_train, y_train)
+    random_search.fit(X_train_bal, y_train_bal)
     best_params = random_search.best_estimator_
     print(f"Hyperparameter tuning... best parameters found: {best_params}")
 
-    # --- 5-FOLD CV: accuracy, report, conf_matrix, AND gini importance ---
-    # accuracy/report/conf_matrix are computed from pooled OUT-OF-FOLD predictions:
-    # every sample is scored only by a fold that did NOT train on it, so this
-    # is a genuine held-out/test-data accuracy, just averaged across 5 folds
-    # instead of a single fixed 80/20 split.
+    # --- 5-FOLD CV: balanced accuracy, report, conf_matrix, AND gini importance ---
+    # each fold: training part downsampled (different random subset per fold),
+    # test part = all held-out sequences with the real class mix.
+    # report/conf_matrix come from pooled OUT-OF-FOLD predictions, so every
+    # sequence is scored exactly once by a model that did not train on it.
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
     fold_importances = []   # one Series per fold
-    fold_accuracies = []    # one float per fold
-    oof_true = []            # out-of-fold true labels (one-hot), pooled across folds
-    oof_pred = []            # out-of-fold predictions, pooled across folds
+    fold_accuracies = []    # one float per fold (balanced accuracy)
+    oof_true = []           # out-of-fold true labels, pooled across folds
+    oof_pred = []           # out-of-fold predictions, pooled across folds
 
     for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y_labels)):
-        X_fold_train, X_fold_test = X.iloc[train_idx], X.iloc[test_idx]
-        y_fold_train, y_fold_test = y.iloc[train_idx], y.iloc[test_idx]
+        # balance the training part of this fold only
+        fold_train_bal = downsample_majority(data_df_merged.iloc[train_idx],
+                                             random_state=42 + fold_idx)
+        X_fold_train = X.loc[fold_train_bal.index]
+        y_fold_train = y_labels.loc[fold_train_bal.index]
+
+        # test part keeps the real class mix
+        X_fold_test = X.iloc[test_idx]
+        y_fold_test = y_labels.iloc[test_idx]
 
         fold_clf = RandomForestClassifier(**best_params.get_params())
         # n_jobs=-1 here parallelizes tree building for the final per-fold model
@@ -190,9 +232,10 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
         fold_clf.fit(X_fold_train, y_fold_train)
 
         fold_pred = fold_clf.predict(X_fold_test)
-        fold_acc = metrics.accuracy_score(y_fold_test, fold_pred)
+        fold_acc = metrics.balanced_accuracy_score(y_fold_test, fold_pred)
         fold_accuracies.append(fold_acc)
-        print(f"  fold {fold_idx} accuracy: {fold_acc:.4f}")
+        print(f"  fold {fold_idx} balanced accuracy: {fold_acc:.4f} "
+              f"(trained on {len(fold_train_bal)}, tested on {len(test_idx)})")
 
         oof_true.append(y_fold_test.values)
         oof_pred.append(fold_pred)
@@ -208,20 +251,22 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
     gini_folds_df = gini_folds_df.sort_values('gini_mean', ascending=False)
 
     # --- aggregate accuracy/report/conf_matrix across folds (pooled OOF) ---
+    # 'accuracy' is the mean BALANCED accuracy across folds
     accuracy = float(np.mean(fold_accuracies))
     accuracy_std = float(np.std(fold_accuracies))
-    print(f"Mean CV accuracy: {accuracy:.4f} (+/- {accuracy_std:.4f})")
+    print(f"Mean CV balanced accuracy: {accuracy:.4f} (+/- {accuracy_std:.4f})")
 
-    y_test_oof = np.vstack(oof_true)   # pooled out-of-fold true labels, one-hot
-    y_pred_oof = np.vstack(oof_pred)   # pooled out-of-fold predictions, one-hot
+    y_test_oof = np.concatenate(oof_true)   # pooled out-of-fold true labels
+    y_pred_oof = np.concatenate(oof_pred)   # pooled out-of-fold predictions
 
     report = metrics.classification_report(
-        y_test_oof, y_pred_oof, output_dict=True, target_names=y.columns.tolist()
+        y_test_oof, y_pred_oof, labels=classes, output_dict=True, zero_division=0
     )
-    conf_matrix = confusion_matrix(y_test_oof.argmax(axis=1), y_pred_oof.argmax(axis=1))
+    conf_matrix = confusion_matrix(y_test_oof, y_pred_oof, labels=classes)
     print("Pooled out-of-fold classification report:",
-          metrics.classification_report(y_test_oof, y_pred_oof, target_names=y.columns.tolist()))
-    print("Pooled out-of-fold confusion matrix:\n", conf_matrix)
+          metrics.classification_report(y_test_oof, y_pred_oof, labels=classes, zero_division=0))
+    print(f"Pooled out-of-fold confusion matrix (rows = true, cols = predicted, order {classes}):\n",
+          conf_matrix)
 
     print(f"Number of features: {num_features}")
 
