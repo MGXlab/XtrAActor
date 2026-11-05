@@ -10,14 +10,18 @@ params.entry_point     = null          // "genome" or "clusters"
 // --- entry point: genome ---
 params.genome_dir      = null          // dir with one genome fasta per file (*.fna/*.fa/*.fasta)
 params.metadata_file   = null
+params.precomputed_proteins = null    // already dereplicated protein fasta(s) of other biomes; glob allowed
 params.genome_type     = null          // "phage" (pharokka) or "non-phage" (bakta)
-params.gene_predictor  = "prodigal-gv"   // phage only: "phanotate" or "prodigal"
+params.gene_predictor  = "prodigal-gv" // phage only: "phanotate", "prodigal" or "prodigal-gv"
 params.pharokka_db     = "/vast/ri65fin/pharokka_db"          // optional if pharokka's DB is in its default location
 params.bakta_db        = "/veodata/03/databases/bakta/v20240516/db"          // optional if BAKTA_DB is set in the environment
 params.pharokka_args   = "--meta --skip_extra_annotations --skip_mash"
 params.bakta_args      = "--skip-plot"
 params.id              = 0.5           // MMseqs2 --min-seq-id (fraction)
 params.cov             = 0.5           // MMseqs2 -c (fraction)
+params.dereplicate     = true          // remove near-identical proteins within each biome first
+params.derep_id        = 0.99          // MMseqs2 --min-seq-id for dereplication (fraction)
+params.derep_cov       = 0.9           // MMseqs2 -c for dereplication (fraction)
 
 // --- entry point: clusters ---
 params.fasta_dir       = null
@@ -51,6 +55,7 @@ include { GENOME_TO_CLUSTERS } from './subworkflows/genome_to_clusters'
 include { CLUSTER_ANALYSIS }   from './subworkflows/cluster_analysis'
 include { PHYLOGLM_ANALYSIS }  from './subworkflows/phyloglm_analysis'
 include { PLOTS }              from './modules/plots'
+include { RANK_CLUSTERS }      from './modules/ranking'
 
 // =============================================================
 // Help & validation
@@ -79,6 +84,8 @@ if (params.help) {
       genome entry point:
         --genome_dir           Directory of genome fasta files (*.fna, *.fa, *.fasta)
         --metadata_file        Metadata CSV passed to orthogroups.py
+        --precomputed_proteins Already dereplicated protein fasta(s) of other biomes, added directly
+                               to the clustering (glob allowed, put it in quotes)
         --genome_type          'phage' (Pharokka) or 'non-phage' (Bakta) (required)
         --gene_predictor       Phage only: 'phanotate'  or 'prodigal-gv' (default = meta mode)
         --pharokka_db          Pharokka database dir (optional)
@@ -87,6 +94,9 @@ if (params.help) {
         --bakta_args           Extra Bakta arguments (default: --skip-plot)
         --id                   MMseqs2 min. sequence identity, fraction (default 0.5)
         --cov                  MMseqs2 coverage, fraction (default 0.7)
+        --dereplicate          Dereplicate proteins within each biome first (default true)
+        --derep_id             Dereplication min. sequence identity, fraction (default 0.99)
+        --derep_cov            Dereplication coverage, fraction (default 0.9)
 
       clusters entry point:
         --fasta_dir            Per-cluster fasta files (<cluster>.faa or .fasta)
@@ -112,8 +122,18 @@ def validateParams() {
         if (!params.metadata_file) errors << "--metadata_file is required for --entry_point genome"
         if (!(params.genome_type in ['phage', 'non-phage']))
             errors << "--genome_type must be 'phage' or 'non-phage' (got: ${params.genome_type})"
-        if (params.genome_type == 'phage' && !(params.gene_predictor in ['phanotate', 'prodigal','prodigal-gv']))
-            errors << "--gene_predictor must be 'phanotate' or 'prodigal' for phage genomes"
+        if (params.genome_type == 'phage' && !(params.gene_predictor in ['phanotate', 'prodigal', 'prodigal-gv']))
+            errors << "--gene_predictor must be 'phanotate', 'prodigal' or 'prodigal-gv' for phage genomes"
+        if (params.genome_dir) {
+            def n_files = files("${params.genome_dir}/*.{fna,fa,fasta}").size()
+            def n_pre   = params.precomputed_proteins ? files(params.precomputed_proteins).size() : 0
+            if (n_files < 1)
+                errors << "--genome_dir contains no fasta files"
+            if (params.precomputed_proteins && n_pre == 0)
+                errors << "--precomputed_proteins matches no files: ${params.precomputed_proteins}"
+            if (n_files + n_pre < 2)
+                errors << "need at least two biome sets: fastas in --genome_dir plus --precomputed_proteins"
+        }
     }
     if (params.entry_point == 'clusters') {
         if (!params.fasta_dir)    errors << "--fasta_dir is required for --entry_point clusters"
@@ -170,9 +190,16 @@ workflow {
     PLOTS(
         rf_files_ch,
         plot_fastas_ch,
-        params.biome1.tokenize(';').last(),
-        params.biome2.tokenize(';').last(),
+        params.biome1,
+        params.biome2,
         params.colour1,
         params.colour2
     )
+    
+    // rank clusters by RF accuracy, with annotations from the cluster fasta headers
+    reports_ch = CLUSTER_ANALYSIS.out.reports
+        .map { name, f -> f }
+        .collect()
+
+    RANK_CLUSTERS(reports_ch, plot_fastas_ch)
 }

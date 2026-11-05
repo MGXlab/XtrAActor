@@ -7,8 +7,6 @@ plt.rcParams.update({'font.size': 14})   # 🔥 global fontsize
 
 
 def plot_report(df, biome1, biome2, colour1, colour2):
-    # Map row order to biome
-    df["biome"] = [biome1, biome2] * (len(df)//2)
 
     # Melt for seaborn long-form
     df_long = df.melt(id_vars=["clust_num", "biome", "support"], 
@@ -68,8 +66,6 @@ def plot_report(df, biome1, biome2, colour1, colour2):
     return plt
 
 def plot_precision_vs_recall(df, biome1, biome2, colour1, colour2):
-    # Map row order to biome
-    df["biome"] = [biome1, biome2] * (len(df)//2)
 
     fig, ax = plt.subplots(figsize=(7,5))
 

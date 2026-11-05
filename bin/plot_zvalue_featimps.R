@@ -4,8 +4,8 @@ library(ggrepel)
 
 args <- commandArgs(trailingOnly = TRUE)
 
-if (length(args) < 3) {
-  stop("Usage: Rscript plot_zvalue_featimps.R <phyloglm_results.csv> <feature_importance.tsv> <plot_file.png>")
+if (length(args) < 2) {
+  stop("Usage: Rscript phyloglm.R <data_df.tsv> <tree_file.nwk> [output_file]")
 }
 
 phyloglm_results <- args[1]
@@ -48,9 +48,9 @@ get_z_threshold <- function(z, padj, side = c("pos", "neg")) {
   side <- match.arg(side)
   keep <- !is.na(padj) & !is.na(z) & (if (side == "pos") z > 0 else z < 0)
   d <- data.frame(z = z[keep], padj = padj[keep])
-  d <- d[order(d$padj), ]           # padj decreasing as |z| increases -> sort by padj ascending
-  if (nrow(d) < 2) return(NA_real_)
-  approx(x = d$padj, y = d$z, xout = 0.01, rule = 2)$y
+  # need at least two DIFFERENT padj values to interpolate
+  if (length(unique(d$padj)) < 2) return(NA_real_)
+  approx(x = d$padj, y = d$z, xout = 0.01, rule = 2, ties = mean)$y
 }
 
 z_thresh_pos <- get_z_threshold(df_merged$z.value, df_merged$padj, "pos")

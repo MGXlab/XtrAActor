@@ -27,7 +27,15 @@ workflow PHYLOGLM_ANALYSIS {
 
     PHYLOGLM_FIT_CHUNK(fit_input_ch)
     MERGE_PHYLOGLM(PHYLOGLM_FIT_CHUNK.out.partial.groupTuple())
-    PLOT_ZVALUE(MERGE_PHYLOGLM.out.csv)
+
+ // only plot clusters where at least one feature was fitted (more than the header line)
+    csv_with_results = MERGE_PHYLOGLM.out.csv.filter { name, f ->
+        def has_rows = f.readLines().size() > 1
+        if (!has_rows) log.warn "No phyloglm results for cluster ${name}, skipping z-value plot"
+        has_rows
+    }
+    PLOT_ZVALUE(csv_with_results.join(features_ch))   // -> (cluster, phyloglm.csv, Feature_importance.tsv)
+    // PLOT_ZVALUE(MERGE_PHYLOGLM.out.csv)
 
     emit:
     csv = MERGE_PHYLOGLM.out.csv

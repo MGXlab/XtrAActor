@@ -1,33 +1,4 @@
 // =============================================================
-// 9. plot_zvalue
-// =============================================================
-process PLOT_ZVALUE {
-    tag "${cluster_name}"
-    cpus 1
-    memory '10 GB'
-    time '1h'
-
-    publishDir "${params.out_dir}/test_phyloglm", mode: 'copy'
-    queue 'standard,short,long,fat'
-
-    input:
-    tuple val(cluster_name), path(csv)
-
-    output:
-    path "${cluster_name}_zvalue_plot.png", emit: zvalue_plot
-    path "${cluster_name}_zvalue.log", emit: log
-
-    script:
-    """
-    source /vast/ri65fin/miniconda3/etc/profile.d/conda.sh
-    conda activate phyloglm
-
-    Rscript ${params.shared_bin}/plot_zvalue_featimps.R \\
-        ${csv} ${cluster_name}_zvalue_plot.png > ${cluster_name}_zvalue.log 2>&1
-    """
-}
-
-// =============================================================
 // 10. Plots (global, across all clusters)
 // =============================================================
 process PLOTS {

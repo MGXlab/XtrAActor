@@ -10,9 +10,9 @@ process PHAROKKA {
     tuple val(genome_id), path(genome)
 
     output:
-    tuple val(genome_id), path("${genome_id}_pharokka"), emit: annotation
-    path("${genome_id}_proteins.faa"),                   emit: proteins
-    path("${genome_id}_pharokka.log"),                   emit: log
+    tuple val(genome_id), path("${genome_id}_pharokka"),      emit: annotation
+    tuple val(genome_id), path("${genome_id}_proteins.faa"),  emit: proteins
+    path("${genome_id}_pharokka.log"),                        emit: log
 
     script:
     def db = params.pharokka_db ? "-d ${params.pharokka_db}" : ''
@@ -21,7 +21,7 @@ process PHAROKKA {
     conda activate ${params.pharokka_env}
 
     pharokka run -i ${genome} -o ${genome_id}_pharokka ${db} \\
-        -t ${task.cpus} -g ${params.gene_predictor} -p ${genome_id} -f \\
+        -t ${task.cpus} -g ${params.gene_predictor} -p ${genome_id} \\
         ${params.pharokka_args} > ${genome_id}_pharokka.log 2>&1
 
     # CDS proteins are written as <predictor>.faa (possibly with prefix)
@@ -42,21 +42,30 @@ process BAKTA {
     tuple val(genome_id), path(genome)
 
     output:
-    tuple val(genome_id), path("${genome_id}_bakta"), emit: annotation
-    path("${genome_id}_proteins.faa"),                emit: proteins
-    path("${genome_id}_bakta.log"),                   emit: log
+    tuple val(genome_id), path("${genome_id}_bakta"),         emit: annotation
+    tuple val(genome_id), path("${genome_id}_proteins.faa"),  emit: proteins
+    path("${genome_id}_bakta.log"),                           emit: log
 
     script:
     def db = params.bakta_db ? "--db ${params.bakta_db}" : ''
     """
-    source /vast/groups/VEO/tools/miniconda3_2024/etc/profile.d/conda.sh
+    source ${params.conda_sh_ri}
     conda activate ${params.bakta_env}
 
     bakta ${db} --output ${genome_id}_bakta --prefix ${genome_id} \\
         --threads ${task.cpus} --force ${params.bakta_args} ${genome} \\
         > ${genome_id}_bakta.log 2>&1
 
-    awk -v g="${genome_id}" '/^>/ { n++; sub(/^>/, ""); printf(">%s_%d %s\\n", g, n, \$0); next } { print }' \\
-        ${genome_id}_bakta/${genome_id}.faa > ${genome_id}_proteins.faa
+    # locus tag -> contig from the .tsv, then rename proteins to <contig>_CDS_<n>
+    awk -F'\\t' '
+        NR == FNR { if (\$0 !~ /^#/) contig[\$6] = \$1; next }
+        /^>/ {
+            split(substr(\$0, 2), h, " "); id = h[1]
+            c = (id in contig) ? contig[id] : "unknown_contig"
+            n[c]++
+            printf(">%s_CDS_%04d %s\\n", c, n[c], substr(\$0, 2)); next
+        }
+        { print }
+    ' ${genome_id}_bakta/${genome_id}.tsv ${genome_id}_bakta/${genome_id}.faa > ${genome_id}_proteins.faa
     """
 }

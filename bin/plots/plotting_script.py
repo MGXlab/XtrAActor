@@ -34,6 +34,7 @@ if __name__ == '__main__':
     dfs = []
     for f in files:
         df = pd.read_csv(f, sep='\t')
+        df["clust_num"] = f.name.replace("_RandomForest_Report.tsv", "")   # cluster name from the file name
         dfs.append(df)
     combined = pd.concat(dfs, ignore_index=True)
 

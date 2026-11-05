@@ -1,5 +1,4 @@
 import argparse, re, sys
-from collections import Counter
 import pandas as pd
 from Bio import SeqIO
 from pathlib import Path
@@ -7,7 +6,7 @@ import matplotlib
 matplotlib.use("Agg")            # no display on the cluster nodes
 import matplotlib.pyplot as plt
 
-MIN_PER_BIOME = 10   # a cluster is written only if EACH biome in the metadata has at least this many members
+MIN_MEMBERS = 50   # a cluster is written only if it has at least this many members in total
 
 parser = argparse.ArgumentParser()
 parser.add_argument("cluster_tsv")
@@ -34,15 +33,11 @@ with open(args.metadata_file) as fh:
         if len(parts) == 2:
             biome_lookup.setdefault(parts[0], parts[1].strip())  # keep first entry per genome
 
-# Biomes to compare = the distinct biomes in the metadata
 biomes = sorted(set(biome_lookup.values()))
 print(f"Biomes in metadata: {biomes}", file=sys.stderr)
-if len(biomes) != 2:
-    print(f"WARNING: expected 2 biomes in metadata, found {len(biomes)}; "
-          f"each of them must reach {MIN_PER_BIOME} members", file=sys.stderr)
 
 # ---------------------------------------------------------------
-# Cluster size histogram (all clusters, before the biome filter)
+# Cluster size histogram (all clusters, before the size filter)
 # ---------------------------------------------------------------
 cluster_sizes = clusters.groupby("representative").size()         # members per cluster
 size_counts = cluster_sizes.value_counts().sort_index()           # size -> number of clusters
@@ -51,9 +46,8 @@ fig, ax = plt.subplots(figsize=(8, 5))
 ax.vlines(size_counts.index, 0, size_counts.values, color="#1f77b4", linewidth=1.5)
 ax.scatter(size_counts.index, size_counts.values, color="#1f77b4", s=8, zorder=3)
 
-min_pass = MIN_PER_BIOME * len(biomes)                            # smallest size that can pass
-ax.axvline(min_pass, color="#d62728", linestyle="--", linewidth=1,
-           label=f"min. size to pass filter ({len(biomes)} × {MIN_PER_BIOME} = {min_pass})")
+ax.axvline(MIN_MEMBERS, color="#d62728", linestyle="--", linewidth=1,
+           label=f"min. cluster size ({MIN_MEMBERS})")
 
 ax.set_xscale("log")
 ax.set_yscale("log")
@@ -72,11 +66,16 @@ print(f"Cluster sizes: min={cluster_sizes.min()}, median={cluster_sizes.median()
 # ---------------------------------------------------------------
 
 def extract_genome(member):
-    # Pharokka: EAF_Gu_TropicPondC2c0115_c1_CDS_0001 -> EAF_Gu_TropicPondC2c0115_c1
+    # strip the CDS suffix: <contig>_CDS_0003 -> <contig>   (Pharokka, and Bakta after renaming)
     if re.search(r'_CDS_\d+$', member):
-        return re.sub(r'_CDS_\d+$', '', member)
-    # Prodigal-style / renamed: <id>_<n> -> <id>
-    return member.rsplit('_', 1)[0]
+        contig = re.sub(r'_CDS_\d+$', '', member)
+    else:
+        # Prodigal-style / renamed: <id>_<n> -> <id>
+        contig = member.rsplit('_', 1)[0]
+    # IMG/VR and assembly headers carry extra '|' fields: the metadata uses only the part before the first '|'
+    #   IMGVR_UViG_3300032238_001132|3300032238|Ga0335266_1155248 -> IMGVR_UViG_3300032238_001132
+    #   NODE_231_length_74457_cov_12.8046||0_partial               -> NODE_231_length_74457_cov_12.8046
+    return contig.split('|')[0]
 
 
 n_clusters = 0
@@ -90,6 +89,10 @@ for i, (rep, group) in enumerate(clusters.groupby("representative")):
     members = [m for m in group["member"] if m in seqs]
     n_missing_seqs += len(group) - len(members)
 
+    # Filter: total cluster size only (checked first, so small clusters skip the biome mapping)
+    if len(members) < MIN_MEMBERS:
+        continue
+
     # Biome mapping
     rows = []
     for member in members:
@@ -99,19 +102,14 @@ for i, (rep, group) in enumerate(clusters.groupby("representative")):
             n_unknown_biome += 1
         rows.append({"gene": member, "representative": rep, "genome": genome, "biome": biome})
 
-    # Filter: every metadata biome needs at least MIN_PER_BIOME members
-    counts = Counter(r["biome"] for r in rows)
-    if any(counts[b] < MIN_PER_BIOME for b in biomes):
-        continue
-
     SeqIO.write((seqs[m] for m in members), fasta_out_dir / f"cluster_{i}.fasta", "fasta")
     pd.DataFrame(rows).to_csv(biome_out_dir / f"cluster_{i}_biome.tsv", sep="\t", index=False)
     n_written += 1
 
 print(f"Clusters total: {n_clusters}", file=sys.stderr)
-print(f"Clusters written (>= {MIN_PER_BIOME} members per biome): {n_written}", file=sys.stderr)
+print(f"Clusters written (>= {MIN_MEMBERS} members): {n_written}", file=sys.stderr)
 print(f"Members missing from FASTA: {n_missing_seqs}", file=sys.stderr)
-print(f"Genes with no biome match: {n_unknown_biome}", file=sys.stderr)
+print(f"Genes with no biome match (in written clusters): {n_unknown_biome}", file=sys.stderr)
 
 if n_written == 0:
-    sys.exit("ERROR: no cluster passed the biome filter")
+    sys.exit("ERROR: no cluster passed the size filter")

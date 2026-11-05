@@ -52,11 +52,11 @@ def radar_biome_plot(cluster_num, biome1, biome2, colour1, colour2,path_to_rf_re
         print(f"No matching features for {cluster_num}")
         return
 
-    sub = biome_df[feat_cols + ["ecosystem_subtype"]]
+    sub = biome_df[feat_cols + ["biome"]]
 
     biome_counts = {}
     for biome in [biome1, biome2]:
-        mask = sub["ecosystem_subtype"] == biome
+        mask = sub["biome"] == biome
         counts = sub.loc[mask, feat_cols].sum()
         aa_counts = counts.rename(lambda x: get_aa(x)).groupby(level=0).sum()
         aa_counts = aa_counts.reindex(aa_order, fill_value=0)
@@ -136,12 +136,12 @@ def AA_bar_plot(cluster_num, biomes,path_to_rf_results,top_k=50):
         print(f"No matching features for {cluster_num}")
         return
 
-    sub = biome_df[feat_cols + ["ecosystem_subtype"]]
+    sub = biome_df[feat_cols + ["biome"]]
 
     # --- Count amino acid frequencies per biome ---
     biome_freqs = {}
     for biome in biomes:
-        mask = sub["ecosystem_subtype"] == biome
+        mask = sub["biome"] == biome
         counts = sub.loc[mask, feat_cols].sum()
         aa_counts = counts.rename(lambda x: get_aa(x)).groupby(level=0).sum()
         aa_counts = aa_counts.reindex(aa_order, fill_value=0)

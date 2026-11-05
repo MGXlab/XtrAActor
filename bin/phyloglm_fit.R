@@ -1,61 +1,93 @@
-# install.packages("phylolm")
-# install.packages("ggtree")
-library(ape)
-library(phylolm)
-library(dplyr)
-library(ggplot2)
-library(parallel)
+# phyloglm_fit.R
+# Fits one phylogenetic logistic regression (phyloglm) per feature of ONE gini chunk.
+#
+# Usage:
+#   Rscript phyloglm_fit.R <phyloglm_dataset.tsv> <tree.nwk> <gini_chunk.tsv> <output_partial.csv>
+#
+#   phyloglm_dataset.tsv : gene | <target 0/1 column> | feature columns ...   (from create_dataset_phyloglm.py)
+#   tree.nwk             : FastTree tree of the same cluster (tip labels = gene IDs)
+#   gini_chunk.tsv       : feature | gini   (one chunk from SPLIT_GINI; decides WHICH features are fitted)
+#   output_partial.csv   : results for ALL fitted features of this chunk, unfiltered.
+#                          FDR correction + significance filtering happen once in phyloglm_merge.R.
 
+suppressPackageStartupMessages({
+  library(ape)
+  library(phylolm)
+  library(dplyr)
+  library(parallel)
+})
 
-# setwd('OneDrive - Friedrich-Schiller-Universität Jena/MCP_struct/Microviridae_analysis/multiple_cluster_analysis/combined_model_phyloglm/')
-
-# df_100 <- read.csv("phyloglm_test_data_all.tsv",header = TRUE, sep = '\t', check.names = FALSE)
+# ---------------------------------------------------------------
+# Arguments
+# ---------------------------------------------------------------
 args <- commandArgs(trailingOnly = TRUE)
-
-if (length(args) < 2) {
-  stop("Usage: Rscript phyloglm.R <data_df.tsv> <tree_file.nwk> [output_file]")
+if (length(args) < 4) {
+  stop("Usage: Rscript phyloglm_fit.R <phyloglm_dataset.tsv> <tree.nwk> <gini_chunk.tsv> <output_partial.csv>")
 }
 
-data_file <- args[1]
-tree_file <- args[2]
-gini_file <- args[3]
+data_file   <- args[1]
+tree_file   <- args[2]
+gini_file   <- args[3]
 output_file <- args[4]
-plot_file <- args[5]
 
+# ---------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------
+# check.names = FALSE keeps feature names like "243_L" unchanged (R would otherwise make them "X243_L")
 df_100 <- read.csv(data_file, header = TRUE, sep = '\t', check.names = FALSE)
-rownames(df_100) <- df_100[,1]
-df_100[,1] <- NULL
+rownames(df_100) <- df_100[, 1]   # gene IDs
+df_100[, 1] <- NULL               # first remaining column = target (0/1), the rest = features
 
 tree <- read.tree(tree_file)
-#class(tree)           # should be "phylo"
-# tree$tip.label        # shows the tip names
 
 df_gini <- read.csv(gini_file, header = TRUE, sep = '\t', check.names = FALSE)
 
-# Features to test: only the ones in THIS chunk's gini file, not every column
-# in the full data_df — that's the whole point of splitting into chunks.
-features <- intersect(df_gini$feature, names(df_100)[-1])
-missing_features <- setdiff(df_gini$feature, names(df_100)[-1])
-if (length(missing_features) > 0) {
-  warning(sprintf(
-    "%d feature(s) from %s not found in %s and will be skipped: %s",
-    length(missing_features), gini_file, data_file,
-    paste(head(missing_features, 5), collapse = ", ")
-  ))
-}
-if (length(features) == 0) {
-  stop(sprintf("No features from %s were found in %s — nothing to fit.", gini_file, data_file))
+# ---------------------------------------------------------------
+# Match genes between dataset and tree
+# ---------------------------------------------------------------
+common <- intersect(rownames(df_100), tree$tip.label)
+cat(sprintf("Genes in dataset: %d | tips in tree: %d | shared: %d\n",
+            nrow(df_100), length(tree$tip.label), length(common)))
+
+if (length(common) < 4) {
+  stop("Fewer than 4 genes shared between dataset and tree. ",
+       "Dataset IDs: ", paste(head(rownames(df_100), 3), collapse = ", "),
+       " | Tree tips: ", paste(head(tree$tip.label, 3), collapse = ", "))
 }
 
-# Function to fit phyloglm for a single feature
+# keep only shared genes, in both objects
+df_100 <- df_100[common, , drop = FALSE]
+if (length(common) < length(tree$tip.label)) {
+  tree <- drop.tip(tree, setdiff(tree$tip.label, common))
+}
+
+target_col <- names(df_100)[1]
+cat(sprintf("Target column: %s | class counts: %s\n", target_col,
+            paste(names(table(df_100[[1]])), table(df_100[[1]]), sep = "=", collapse = ", ")))
+
+# ---------------------------------------------------------------
+# Features to test: only those in THIS gini chunk (and present in the dataset)
+# ---------------------------------------------------------------
+features <- intersect(as.character(df_gini$feature), names(df_100)[-1])
+if (length(features) == 0) {
+  stop("None of the chunk's features are columns of the dataset. ",
+       "Chunk: ", paste(head(df_gini$feature), collapse = ", "),
+       " | Dataset: ", paste(head(names(df_100)[-1]), collapse = ", "))
+}
+n_missing <- nrow(df_gini) - length(features)
+if (n_missing > 0) {
+  cat(sprintf("WARNING: %d chunk feature(s) not found in the dataset\n", n_missing))
+}
+cat(sprintf("Fitting %d feature(s)\n", length(features)))
+
+# ---------------------------------------------------------------
+# Fit phyloglm for a single feature
+# ---------------------------------------------------------------
 fit_phyloglm <- function(feature) {
-  #print(feature)  # track progress
-  
-  # Prepare data
-  dat <- df_100[, c(1, which(names(df_100) == feature))]
+
+  dat <- df_100[, c(target_col, feature)]
   names(dat) <- c("y", "x")
-  
-  # Fit model with error handling
+
   m1 <- tryCatch(
     phyloglm(
       formula = y ~ x,
@@ -66,49 +98,43 @@ fit_phyloglm <- function(feature) {
     ),
     error = function(e) list(coefficients = NA)
   )
-  
-  # Extract results
+
   if (is.na(coef(m1)[1])) {
     return(data.frame(
-      feature = feature,
+      feature  = feature,
       Estimate = NA,
-      SE = NA,
-      z.value = NA,
-      p.value = NA,
-      alpha = NA
+      SE       = NA,
+      z.value  = NA,
+      p.value  = NA,
+      alpha    = NA
     ))
   } else {
     m1.sum <- summary(m1)
     return(data.frame(
-      feature = feature,
+      feature  = feature,
       Estimate = m1.sum$coefficients["x", 1],
-      SE = m1.sum$coefficients["x", 2],
-      z.value = m1.sum$coefficients["x", 3],
-      p.value = m1.sum$coefficients["x", 6],
-      alpha = m1$alpha
+      SE       = m1.sum$coefficients["x", 2],
+      z.value  = m1.sum$coefficients["x", 3],
+      p.value  = m1.sum$coefficients["x", 6],
+      alpha    = m1$alpha
     ))
   }
 }
 
-
-
-# Apply to all features
-# Res_100_pruned <- lapply(features, fit_phyloglm) %>% bind_rows()
-# Detect cores from Slurm allocation (falls back to detectCores() if not set)
+# ---------------------------------------------------------------
+# Run in parallel on the cores SLURM gave this task
+# ---------------------------------------------------------------
 n_cores <- as.integer(Sys.getenv("SLURM_CPUS_PER_TASK", unset = NA))
 if (is.na(n_cores)) n_cores <- max(1, detectCores() - 1)
 
-# Apply to all features in parallel
 Res_100_pruned <- mclapply(features, fit_phyloglm, mc.cores = n_cores) %>% bind_rows()
 
-# View results
-#head(Res_100_pruned, n=10)
+n_failed <- sum(is.na(Res_100_pruned$Estimate))
+cat(sprintf("Fits done: %d ok, %d failed\n", nrow(Res_100_pruned) - n_failed, n_failed))
 
-# join with gini values
+# ---------------------------------------------------------------
+# Add gini values and write ALL results (no FDR / no filtering here)
+# ---------------------------------------------------------------
 Res_100_pruned <- left_join(Res_100_pruned, df_gini, by = "feature")
 
-# NOTE: no padj/filtering here — this is only ONE chunk's p-values, and BH
-# correction needs the full pooled set across all chunks to be valid. FDR
-# correction happens once, in phyloglm_merge.R, on the combined results.
-
-write.csv(Res_100_pruned,output_file,row.names = FALSE)
+write.csv(Res_100_pruned, output_file, row.names = FALSE)

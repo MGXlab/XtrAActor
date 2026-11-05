@@ -11,19 +11,7 @@ output_csv    <- args[n_args - 1]
 output_plot   <- args[n_args]
 
 # 2. Alle Chunk-Ergebnisse einlesen und zusammenführen
-# colClasses forces the column types explicitly — without this, read.csv()
-# infers types from the data, and a chunk whose fit_phyloglm() returned only
-# NA rows (or, before the phyloglm_fit.R fix, an empty post-filter table)
-# comes back with e.g. `feature` as logical instead of character, which then
-# makes bind_rows() fail when combining it with the other (correctly typed)
-# chunks.
-col_spec <- c(feature = "character", Estimate = "numeric", SE = "numeric",
-              z.value = "numeric", p.value = "numeric", alpha = "numeric",
-              gini = "numeric")
-
-Res_combined <- lapply(partial_files, function(f) {
-  read.csv(f, colClasses = col_spec)
-}) %>% bind_rows()
+Res_combined <- lapply(partial_files, read.csv) %>% bind_rows()
 
 # 3. FDR-Korrektur EINMAL auf dem vollständigen, zusammengeführten Datensatz
 Res_combined$padj <- p.adjust(Res_combined$p.value, method = "fdr")
@@ -56,8 +44,4 @@ p <- ggplot(Res_combined, aes(x = Estimate, y = z.value, label=feature)) +
     
   )
 
-
-
-p
-ggsave(output_plot)
-#print(-log10(0.005))
+ggsave(output_plot, plot = p, width = 10, height = 8, dpi = 300)

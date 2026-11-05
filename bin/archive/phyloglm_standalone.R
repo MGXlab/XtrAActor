@@ -31,21 +31,8 @@ tree <- read.tree(tree_file)
 # tree$tip.label        # shows the tip names
 
 df_gini <- read.csv(gini_file, header = TRUE, sep = '\t', check.names = FALSE)
-
-# Features to test: only the ones in THIS chunk's gini file, not every column
-# in the full data_df — that's the whole point of splitting into chunks.
-features <- intersect(df_gini$feature, names(df_100)[-1])
-missing_features <- setdiff(df_gini$feature, names(df_100)[-1])
-if (length(missing_features) > 0) {
-  warning(sprintf(
-    "%d feature(s) from %s not found in %s and will be skipped: %s",
-    length(missing_features), gini_file, data_file,
-    paste(head(missing_features, 5), collapse = ", ")
-  ))
-}
-if (length(features) == 0) {
-  stop(sprintf("No features from %s were found in %s — nothing to fit.", gini_file, data_file))
-}
+# Features to test (columns 2 onward)
+features <- names(df_100)[-c(1)]
 
 # Function to fit phyloglm for a single feature
 fit_phyloglm <- function(feature) {
@@ -144,3 +131,4 @@ p <- ggplot(Res_100_pruned, aes(x = Estimate, y = z.value, label=feature)) +
 p
 ggsave(plot_file)
 #print(-log10(0.005))
+

@@ -1,16 +1,34 @@
 // =============================================================
-// 0b. MMseqs2 clustering (all genomes pooled)
+// 0b. Dereplication: remove near-identical proteins WITHIN each biome
+// =============================================================
+process MMSEQ2_DEREP {
+    tag "${biome_set}"
+    publishDir "${params.out_dir}/mmseq2_derep", mode: 'copy'
+
+    input:
+    tuple val(biome_set), path(proteins)
+    val(min_id)
+    val(min_cov)
+
+    output:
+    tuple val(biome_set), path("${biome_set}_derep_rep_seq.fasta"), emit: rep_fasta
+    path "${biome_set}_derep_cluster.tsv",                           emit: tsv
+    path "${biome_set}_derep.log",                                   emit: log
+
+    script:
+    """
+    source ${params.conda_sh_veo}
+    conda activate mmseq2_v14.7e284
+    mmseqs easy-cluster ${proteins} ${biome_set}_derep tmp \\
+        --min-seq-id ${min_id} -c ${min_cov} --threads ${task.cpus} > ${biome_set}_derep.log 2>&1
+    """
+}
+
+// =============================================================
+// 0c. MMseqs2 clustering (dereplicated proteins, all biomes pooled)
 // =============================================================
 process MMSEQ2 {
-    cpus 10
-    memory { 50.GB * task.attempt }
-    time   { 6.h * task.attempt }
-
-    errorStrategy 'retry'
-    maxRetries 2
-
     publishDir "${params.out_dir}/mmseq2", mode: 'copy', pattern: "mmseq2*"
-    queue 'standard,short,long,fat'
 
     input:
     path(prediction_file)
@@ -33,24 +51,12 @@ process MMSEQ2 {
 }
 
 // =============================================================
-// 0c. Orthogroups: per-cluster fasta + per-cluster metadata
+// 0d. Orthogroups: per-cluster fasta + per-cluster biome table
 // =============================================================
 process ORTHOGROUPS {
-    cpus 2
-    memory { 20.GB * task.attempt }
-    time   { 2.h * task.attempt }
-
-    errorStrategy 'retry'
-    maxRetries 2
-
-    // orthogroups.py writes into the task root -> sort into sub-folders on publish
+    // outputs are already in sub-folders -> keep paths; logs go to logs/
     publishDir "${params.out_dir}", mode: 'copy',
-        saveAs: { fn ->
-            if (fn.endsWith('.fasta'))      "cluster_fastas/${fn}"
-            else if (fn.endsWith('.tsv'))   "cluster_biomes/${fn}"
-            else                            "logs/${fn}"
-        }
-    queue 'standard,short,long,fat'
+        saveAs: { fn -> fn.endsWith('.log') ? "logs/${fn}" : fn }
 
     input:
     path cluster_tsv
@@ -65,10 +71,11 @@ process ORTHOGROUPS {
 
     script:
     """
-    source /vast/ri65fin/miniconda3/etc/profile.d/conda.sh
+    source ${params.conda_sh_ri}
     conda activate working-env
+    # random comment line
 
-    python3 ${projectDir}/bin/orthogroups.py \\
+    python3 ${projectDir}/bin/orthogroups_sel_by_biome.py \\
         ${cluster_tsv} ${proteins_fasta} ${metadata_file} \\
         --fasta_out_dir cluster_fastas --biome_out_dir cluster_biomes 2> orthogroups.log
     """

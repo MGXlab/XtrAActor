@@ -8,7 +8,6 @@ updates on this script:
 
 """
 
-
 # libraries
 import sys
 import re
