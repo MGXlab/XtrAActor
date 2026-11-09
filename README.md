@@ -1,6 +1,10 @@
 # XrAActor
 This pipeline will help you identify which amino acid residues are important for the biome prediction of proteins
 
+## Overall workflow
+
+!workflow_image[images/pipeline_1.png]
+
 ## Running with proteins
 
 ### General process

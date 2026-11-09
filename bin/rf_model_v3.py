@@ -26,7 +26,7 @@ import pandas as pd
 import numpy as np
 from Bio import SeqIO
 from sklearn.model_selection import train_test_split
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import RepeatedStratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn import metrics
@@ -51,7 +51,7 @@ def remove_zero_variance_features(data_df_numerical, feature_names):
     return data_df_numerical, remaining_feature_names
 
 
-MAX_RATIO = 3.0   # majority:minority ratio after downsampling (1.0 = fully balanced, 2.0 = at most 2:1)
+MAX_RATIO = 5.0   # majority:minority ratio after downsampling (1.0 = fully balanced, 2.0 = at most 2:1)
 
 def downsample_majority(data_df_merged, label_col='biome', random_state=42):
     """
@@ -64,12 +64,16 @@ def downsample_majority(data_df_merged, label_col='biome', random_state=42):
     if counts.max() <= n_max:
         return data_df_merged
 
-    balanced = (
-        data_df_merged.groupby(label_col, group_keys=False)
-        .apply(lambda g: g.sample(n=min(len(g), n_max), random_state=random_state))
-    )
+    balanced_idx = [
+        i
+        for _, g in data_df_merged.groupby(label_col)
+        for i in g.sample(n=min(len(g), n_max), random_state=random_state).index
+    ]
+    balanced = data_df_merged.loc[balanced_idx]
+
     print(f"Downsampling for RF: {counts.to_dict()} -> "
           f"{balanced[label_col].value_counts().to_dict()}")
+    
     return balanced
 
 def parse_seqs_and_metadata(fasta_path, metadata_path):
@@ -203,19 +207,23 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
     best_params = random_search.best_estimator_
     print(f"Hyperparameter tuning... best parameters found: {best_params}")
 
-    # --- 5-FOLD CV: balanced accuracy, report, conf_matrix, AND gini importance ---
+        # --- REPEATED 5-FOLD CV (5 folds x 3 repeats = 15 models) ---
     # each fold: training part downsampled (different random subset per fold),
     # test part = all held-out sequences with the real class mix.
-    # report/conf_matrix come from pooled OUT-OF-FOLD predictions, so every
-    # sequence is scored exactly once by a model that did not train on it.
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    # Each repeat is a different random 5-way split, so every sequence is tested
+    # once per repeat (3x in total). Report/conf_matrix are computed per repeat
+    # from its out-of-fold predictions and then averaged across repeats.
+    n_splits, n_repeats = 5, 3
+    rskf = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=42)
 
-    fold_importances = []   # one Series per fold
-    fold_accuracies = []    # one float per fold (balanced accuracy)
-    oof_true = []           # out-of-fold true labels, pooled across folds
-    oof_pred = []           # out-of-fold predictions, pooled across folds
+    fold_importances = []                           # one Series per model (15)
+    fold_accuracies = []                            # one float per model (balanced accuracy)
+    oof_true = [[] for _ in range(n_repeats)]       # out-of-fold true labels, per repeat
+    oof_pred = [[] for _ in range(n_repeats)]       # out-of-fold predictions, per repeat
 
-    for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y_labels)):
+    for fold_idx, (train_idx, test_idx) in enumerate(rskf.split(X, y_labels)):
+        repeat = fold_idx // n_splits
+
         # balance the training part of this fold only
         fold_train_bal = downsample_majority(data_df_merged.iloc[train_idx],
                                              random_state=42 + fold_idx)
@@ -227,45 +235,55 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
         y_fold_test = y_labels.iloc[test_idx]
 
         fold_clf = RandomForestClassifier(**best_params.get_params())
-        # n_jobs=-1 here parallelizes tree building for the final per-fold model
+        # n_jobs=-1 here parallelizes tree building for the per-fold model
         fold_clf.set_params(random_state=42 + fold_idx, n_jobs=-1)
         fold_clf.fit(X_fold_train, y_fold_train)
 
         fold_pred = fold_clf.predict(X_fold_test)
         fold_acc = metrics.balanced_accuracy_score(y_fold_test, fold_pred)
         fold_accuracies.append(fold_acc)
-        print(f"  fold {fold_idx} balanced accuracy: {fold_acc:.4f} "
+        print(f"  repeat {repeat} fold {fold_idx % n_splits} balanced accuracy: {fold_acc:.4f} "
               f"(trained on {len(fold_train_bal)}, tested on {len(test_idx)})")
 
-        oof_true.append(y_fold_test.values)
-        oof_pred.append(fold_pred)
+        oof_true[repeat].append(y_fold_test.values)
+        oof_pred[repeat].append(fold_pred)
 
         fold_imp = pd.Series(fold_clf.feature_importances_, index=feature_names, name=f"fold_{fold_idx}")
         fold_importances.append(fold_imp)
 
-    # --- aggregate Gini importances across folds ---
-    gini_folds_df = pd.concat(fold_importances, axis=1)  # columns: fold_0 ... fold_4
+    # --- aggregate Gini importances across all 15 models ---
+    gini_folds_df = pd.concat(fold_importances, axis=1)  # columns: fold_0 ... fold_14
     fold_cols = [c for c in gini_folds_df.columns if c.startswith('fold_')]
     gini_folds_df['gini_mean'] = gini_folds_df[fold_cols].mean(axis=1)
     gini_folds_df['gini_std'] = gini_folds_df[fold_cols].std(axis=1)
     gini_folds_df = gini_folds_df.sort_values('gini_mean', ascending=False)
 
-    # --- aggregate accuracy/report/conf_matrix across folds (pooled OOF) ---
-    # 'accuracy' is the mean BALANCED accuracy across folds
+    # --- accuracy: mean BALANCED accuracy across all 15 models ---
     accuracy = float(np.mean(fold_accuracies))
     accuracy_std = float(np.std(fold_accuracies))
     print(f"Mean CV balanced accuracy: {accuracy:.4f} (+/- {accuracy_std:.4f})")
 
-    y_test_oof = np.concatenate(oof_true)   # pooled out-of-fold true labels
-    y_pred_oof = np.concatenate(oof_pred)   # pooled out-of-fold predictions
+    # --- report / conf_matrix: per repeat (each sequence once), then averaged ---
+    reports, conf_mats = [], []
+    for r in range(n_repeats):
+        yt = np.concatenate(oof_true[r])
+        yp = np.concatenate(oof_pred[r])
+        reports.append(metrics.classification_report(yt, yp, labels=classes,
+                                                     output_dict=True, zero_division=0))
+        conf_mats.append(confusion_matrix(yt, yp, labels=classes))
 
-    report = metrics.classification_report(
-        y_test_oof, y_pred_oof, labels=classes, output_dict=True, zero_division=0
-    )
-    conf_matrix = confusion_matrix(y_test_oof, y_pred_oof, labels=classes)
-    print("Pooled out-of-fold classification report:",
-          metrics.classification_report(y_test_oof, y_pred_oof, labels=classes, zero_division=0))
-    print(f"Pooled out-of-fold confusion matrix (rows = true, cols = predicted, order {classes}):\n",
+    report = {}
+    for key, value in reports[0].items():
+        if isinstance(value, dict):      # per-class / avg entries: average each metric
+            report[key] = {m: float(np.mean([rp[key][m] for rp in reports])) for m in value}
+        else:                            # 'accuracy' entry
+            report[key] = float(np.mean([rp[key] for rp in reports]))
+
+    conf_matrix = np.rint(np.mean(conf_mats, axis=0)).astype(int)   # mean over repeats, rounded
+
+    print("Out-of-fold classification report (mean over repeats):\n",
+          pd.DataFrame(report).T.round(3))
+    print(f"Out-of-fold confusion matrix (mean over repeats; rows = true, cols = predicted, order {classes}):\n",
           conf_matrix)
 
     print(f"Number of features: {num_features}")
