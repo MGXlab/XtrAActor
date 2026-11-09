@@ -3,7 +3,7 @@ This pipeline will help you identify which amino acid residues are important for
 
 ## Overall workflow
 
-!workflow_image[![images/pipeline_1.png](https://github.com/MGXlab/XtrAActor/blob/main/images/pipeline_1.png)]
+![images/pipeline_1.png](https://github.com/MGXlab/XtrAActor/blob/main/images/pipeline_1.png)
 
 ## Running with proteins
 
