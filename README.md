@@ -58,5 +58,6 @@ Your input should be formatted like this directly in the `results_out` directory
 ```
 See the examples folder for what these files should look like.
 
-[cluster_fastas]()  
-[cluster_biomes]()
+[cluster_fastas](https://github.com/MGXlab/XtrAActor/tree/main/Examples/input_examples/from_protein_clusters/results_out/cluster_fastas)  
+[cluster_biomes](https://github.com/MGXlab/XtrAActor/tree/main/Examples/input_examples/from_protein_clusters/results_out/cluster_biomes)
+
