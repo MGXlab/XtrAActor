@@ -1,0 +1,18 @@
+---
+name: working-env-nf
+channels:
+- conda-forge
+dependencies:
+- python=3.12.2
+- biopython=1.83
+- matplotlib=3.8.4
+- numpy=1.26.4
+- pandas=2.2.1
+- scikit-learn=1.5.2
+- scipy=1.13.0
+- seaborn=0.13.2
+- shap=0.48.0
+- pip
+- pip:
+  - adjustText==1.4.0
+  - logomaker==0.8.7

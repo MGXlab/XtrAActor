@@ -9,7 +9,7 @@
 
 source /vast/ri65fin/miniconda3/etc/profile.d/conda.sh
 
-conda activate nf-env
+conda activate XtrAActor_env
 
 # nextflow run pipeline_v2.nf -params-file user_inputs.yaml
 
