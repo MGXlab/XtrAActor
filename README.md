@@ -8,6 +8,8 @@ biome2 = marine
 
 the "environment" can also be a phenotype instead, for example, "disease" and "healthy"
 
+**This pipeline is designed to be run with an HPC cluster like slurm** - change the `nextflow.config` file accordingly if using a different HPC or running locally (just ask your favourite Agent to do this)
+
 ## Overall workflow
 
 ![images/pipeline_1.png](https://github.com/MGXlab/XtrAActor/blob/main/images/pipeline_1.png)
@@ -57,7 +59,6 @@ cp ../run_xtraactor_genomes.sbatch ./
 # create your input folders
 mkdir -p data/fastas
 mkdir -p data/fastas
-
 ```
 
 Your input should be formatted like this:
@@ -76,7 +77,33 @@ See the examples folder for what these files should look like.
 
 Change the parameters in the sbatch file accordingly. You will need to change the paths for the inputs etc
 
+Required params:
+
+```bash
+  --entry_point 'genome'
+  --genome_dir path/to/data/fastas
+  --metadata_file path/to/data/metadata/metadata.tsv
+  --biome1 "Environmental;Aquatic;Freshwater"      # please make sure this matches whatever is in your metadata.tsv
+  --biome2 "Environmental;Aquatic;Marine"
+  --colour1 "#91ff00"
+  --colour2 "#ff7f0e"               # colour1 and 2 are for biome1 and 2, for all the plots
+  --out_dir results_out             # anyway it is the default
+```
+
 ### 2. Running with protein clusters
+
+Create a new folder for your run, go into it, copy and edit the sbatch and run from there
+
+```bash
+mkdir my_run
+cd my_run
+cp ../run_xtraactor_genomes.sbatch ./
+
+# create your input folders (in this case, you'll also create the main output folder)
+mkdir -p results_out/cluster_biomes
+mkdir -p results_out/cluster_fastas
+```
+
 Your input should be formatted like this directly in the `results_out` directory:
 
 ```bash
@@ -93,6 +120,20 @@ See the examples folder for what these files should look like.
 [cluster_fastas](https://github.com/MGXlab/XtrAActor/tree/main/Examples/input_examples/from_protein_clusters/results_out/cluster_fastas)  
 [cluster_biomes](https://github.com/MGXlab/XtrAActor/tree/main/Examples/input_examples/from_protein_clusters/results_out/cluster_biomes)
 
+Change the parameters in the sbatch file accordingly. You will need to change the paths for the inputs etc
+
+Required params:
+
+```bash
+  --entry_point 'clusters'
+  --metadata_dir results_out/cluster_biomes
+  --fasta_dir results_out/cluster_fastas
+  --biome1 "Environmental;Aquatic;Freshwater"      # please make sure this matches whatever is in your metadata.tsv
+  --biome2 "Environmental;Aquatic;Marine"
+  --colour1 "#91ff00"
+  --colour2 "#ff7f0e"                         # colour1 and 2 are for biome1 and 2, for all the plots
+  --out_dir results_out                       # anyway it is the default
+```
 
 ## Welcome to parameter heaven
 
@@ -168,15 +209,15 @@ Launching `main.nf` [desperate_volhard] DSL2 - revision: b01f1f5cd4
         --n_chunks             Max phyloglm chunks per cluster                    [15]
 
     Tools and environments (usually left at their defaults):
-        --mafft_bin            [/home/groups/VEO/tools/mafft/v7.505/bin/mafft]
-        --trimal_bin           [/home/groups/VEO/tools/trimal/v1.5.0/trimal/source/trimal]
-        --fasttree_bin         [/home/groups/VEO/tools/fastTreeMP/v2.1.11/FastTreeMP]
-        --conda_sh_veo         [/vast/groups/VEO/tools/anaconda3/etc/profile.d/conda.sh]
-        --conda_sh_lydia       [/vast/groups/VEO/shared_data/Lydia_Varada/miniconda3/etc/profile.d/conda.sh]
-        --conda_sh_ri          [/vast/ri65fin/miniconda3/etc/profile.d/conda.sh]
+        --mafft_bin            []
+        --trimal_bin           []
+        --fasttree_bin         []
+        --conda_sh_veo         []
+        --conda_sh_lydia       []
+        --conda_sh_ri          []
         --pharokka_env         [pharokka]
         --bakta_env            [bakta_v1.9.3]
-        --shared_bin           [/vast/ri65fin/nextflow_AAcidx_v2/bin]
+        --shared_bin           []
 
     Values in [brackets] are the current defaults (null = not set).
     Resources (cpus, memory, time, partitions) are set per process in nextflow.config.
