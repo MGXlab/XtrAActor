@@ -26,7 +26,7 @@ import pandas as pd
 import numpy as np
 from Bio import SeqIO
 from sklearn.model_selection import train_test_split
-from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.model_selection import StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn import metrics
@@ -75,6 +75,27 @@ def downsample_majority(data_df_merged, label_col='biome', random_state=42):
           f"{balanced[label_col].value_counts().to_dict()}")
     
     return balanced
+
+TOP_K = 100   # number of top features per fold used for the stability statistic
+
+
+def top_feature_overlap(fold_importances, k=TOP_K):
+    """
+    Stability of the top-k features across CV folds.
+    Per fold: the k most important features (importance > 0).
+    Returns |intersection of all folds| / |union of all folds|, plus both sizes.
+    1.0 = every fold picked exactly the same top-k features; close to 0 = little agreement.
+    """
+    top_sets = []
+    for imp in fold_importances:
+        nonzero = imp[imp > 0].sort_values(ascending=False)
+        top_sets.append(set(nonzero.index[:k]))
+
+    union = set.union(*top_sets)
+    intersection = set.intersection(*top_sets)
+    ratio = len(intersection) / len(union) if union else float("nan")
+    return ratio, len(intersection), len(union)
+
 
 def parse_seqs_and_metadata(fasta_path, metadata_path):
     """
@@ -166,11 +187,12 @@ def parse_seqs_and_metadata(fasta_path, metadata_path):
 
 def run_the_classifier(data_df_merged, num_features, feature_names):
     """
-    In order to use as much data as possible from each biome, 
+    In order to use as much data as possible from each biome,
     class balancing is done INSIDE each split. The training part is
     downsampled (see downsample_majority / MAX_RATIO); every test part keeps
-    the real class mix (not downsampled - ratio of the real data stays). 
+    the real class mix (not downsampled - ratio of the real data stays).
     Performance is reported as balanced accuracy.
+    Feature stability: overlap of the top-100 features across the 5 folds.
     """
 
     X = data_df_merged.iloc[:, 0:num_features]     # features
@@ -197,8 +219,7 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
     # inner CV of the search needs >= n_splits members per class
     inner_cv = max(2, min(5, int(y_train_bal.value_counts().min())))
 
-    # n_jobs=-1 here parallelizes the search across hyperparameter
-    # candidates/CV folds
+    # n_jobs=-1 here parallelizes the search across hyperparameter candidates/CV folds
     random_search = RandomizedSearchCV(
         RandomForestClassifier(random_state=42), param_grid,
         scoring='balanced_accuracy', cv=inner_cv, random_state=42, n_jobs=-1
@@ -207,23 +228,19 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
     best_params = random_search.best_estimator_
     print(f"Hyperparameter tuning... best parameters found: {best_params}")
 
-        # --- REPEATED 5-FOLD CV (5 folds x 3 repeats = 15 models) ---
+    # --- 5-FOLD CV: balanced accuracy, report, conf_matrix, gini importance ---
     # each fold: training part downsampled (different random subset per fold),
     # test part = all held-out sequences with the real class mix.
-    # Each repeat is a different random 5-way split, so every sequence is tested
-    # once per repeat (3x in total). Report/conf_matrix are computed per repeat
-    # from its out-of-fold predictions and then averaged across repeats.
-    n_splits, n_repeats = 5, 3
-    rskf = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=42)
+    # report/conf_matrix come from pooled OUT-OF-FOLD predictions, so every
+    # sequence is scored exactly once by a model that did not train on it.
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-    fold_importances = []                           # one Series per model (15)
-    fold_accuracies = []                            # one float per model (balanced accuracy)
-    oof_true = [[] for _ in range(n_repeats)]       # out-of-fold true labels, per repeat
-    oof_pred = [[] for _ in range(n_repeats)]       # out-of-fold predictions, per repeat
+    fold_importances = []   # one Series per fold
+    fold_accuracies = []    # one float per fold (balanced accuracy)
+    oof_true = []           # out-of-fold true labels, pooled across folds
+    oof_pred = []           # out-of-fold predictions, pooled across folds
 
-    for fold_idx, (train_idx, test_idx) in enumerate(rskf.split(X, y_labels)):
-        repeat = fold_idx // n_splits
-
+    for fold_idx, (train_idx, test_idx) in enumerate(skf.split(X, y_labels)):
         # balance the training part of this fold only
         fold_train_bal = downsample_majority(data_df_merged.iloc[train_idx],
                                              random_state=42 + fold_idx)
@@ -242,104 +259,107 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
         fold_pred = fold_clf.predict(X_fold_test)
         fold_acc = metrics.balanced_accuracy_score(y_fold_test, fold_pred)
         fold_accuracies.append(fold_acc)
-        print(f"  repeat {repeat} fold {fold_idx % n_splits} balanced accuracy: {fold_acc:.4f} "
+        print(f"  fold {fold_idx} balanced accuracy: {fold_acc:.4f} "
               f"(trained on {len(fold_train_bal)}, tested on {len(test_idx)})")
 
-        oof_true[repeat].append(y_fold_test.values)
-        oof_pred[repeat].append(fold_pred)
+        oof_true.append(y_fold_test.values)
+        oof_pred.append(fold_pred)
 
         fold_imp = pd.Series(fold_clf.feature_importances_, index=feature_names, name=f"fold_{fold_idx}")
         fold_importances.append(fold_imp)
 
-    # --- aggregate Gini importances across all 15 models ---
-    gini_folds_df = pd.concat(fold_importances, axis=1)  # columns: fold_0 ... fold_14
+    # --- feature stability: top-k overlap across the 5 folds ---
+    topk_overlap, topk_intersection, topk_union = top_feature_overlap(fold_importances, TOP_K)
+    print(f"Top-{TOP_K} feature overlap across folds: {topk_intersection} shared / "
+          f"{topk_union} total = {topk_overlap:.3f}")
+
+    # --- aggregate Gini importances across folds ---
+    gini_folds_df = pd.concat(fold_importances, axis=1)  # columns: fold_0 ... fold_4
     fold_cols = [c for c in gini_folds_df.columns if c.startswith('fold_')]
     gini_folds_df['gini_mean'] = gini_folds_df[fold_cols].mean(axis=1)
     gini_folds_df['gini_std'] = gini_folds_df[fold_cols].std(axis=1)
     gini_folds_df = gini_folds_df.sort_values('gini_mean', ascending=False)
 
-    # --- accuracy: mean BALANCED accuracy across all 15 models ---
+    # --- aggregate accuracy/report/conf_matrix across folds (pooled OOF) ---
+    # 'accuracy' is the mean BALANCED accuracy across folds
     accuracy = float(np.mean(fold_accuracies))
     accuracy_std = float(np.std(fold_accuracies))
     print(f"Mean CV balanced accuracy: {accuracy:.4f} (+/- {accuracy_std:.4f})")
 
-    # --- report / conf_matrix: per repeat (each sequence once), then averaged ---
-    reports, conf_mats = [], []
-    for r in range(n_repeats):
-        yt = np.concatenate(oof_true[r])
-        yp = np.concatenate(oof_pred[r])
-        reports.append(metrics.classification_report(yt, yp, labels=classes,
-                                                     output_dict=True, zero_division=0))
-        conf_mats.append(confusion_matrix(yt, yp, labels=classes))
+    y_test_oof = np.concatenate(oof_true)   # pooled out-of-fold true labels
+    y_pred_oof = np.concatenate(oof_pred)   # pooled out-of-fold predictions
 
-    report = {}
-    for key, value in reports[0].items():
-        if isinstance(value, dict):      # per-class / avg entries: average each metric
-            report[key] = {m: float(np.mean([rp[key][m] for rp in reports])) for m in value}
-        else:                            # 'accuracy' entry
-            report[key] = float(np.mean([rp[key] for rp in reports]))
-
-    conf_matrix = np.rint(np.mean(conf_mats, axis=0)).astype(int)   # mean over repeats, rounded
-
-    print("Out-of-fold classification report (mean over repeats):\n",
-          pd.DataFrame(report).T.round(3))
-    print(f"Out-of-fold confusion matrix (mean over repeats; rows = true, cols = predicted, order {classes}):\n",
+    report = metrics.classification_report(
+        y_test_oof, y_pred_oof, labels=classes, output_dict=True, zero_division=0
+    )
+    conf_matrix = confusion_matrix(y_test_oof, y_pred_oof, labels=classes)
+    print("Pooled out-of-fold classification report:",
+          metrics.classification_report(y_test_oof, y_pred_oof, labels=classes, zero_division=0))
+    print(f"Pooled out-of-fold confusion matrix (rows = true, cols = predicted, order {classes}):\n",
           conf_matrix)
 
     print(f"Number of features: {num_features}")
 
-    return best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df
+    topk_stats = {
+        f"top{TOP_K}_overlap": topk_overlap,
+        f"top{TOP_K}_intersection": topk_intersection,
+        f"top{TOP_K}_union": topk_union,
+    }
+    return best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df, topk_stats
 
 
 def create_output_files(data_df_merged, run_name, output_dir,
-                         best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df):
+                        best_params, accuracy, accuracy_std, report, conf_matrix,
+                        gini_folds_df, topk_stats):
 
     features_out_path = output_dir.joinpath(f"{run_name}_Feature_importance.tsv")
     report_out_path = output_dir.joinpath(f"{run_name}_RandomForest_Report.tsv")
     data_df_out_path = output_dir.joinpath(f"{run_name}_data_df.tsv")
 
     # --- CREATE AN OUTPUT FILE FOR RF MODEL REPORT ---
-    # report's keys are the actual biome strings (target_names was passed to
-    # classification_report), so iterate over the real per-class entries
-    excluded_keys = {'accuracy', 'macro avg', 'weighted avg'}
+    # one row per biome; accuracy and top-k overlap are model-level (same in both rows)
+    excluded_keys = {'accuracy', 'macro avg', 'weighted avg', 'micro avg'}
     class_names = [k for k in report.keys() if k not in excluded_keys]
 
+    topk_cols = list(topk_stats.keys())
     report_dict = {}
     for class_name in class_names:
-        precision = report[class_name]['precision']
-        recall = report[class_name]['recall']
-        f1 = report[class_name]['f1-score']
-        support = report[class_name]['support']
         report_dict[class_name] = [
             run_name, best_params, accuracy, accuracy_std,
-            precision, recall, f1, support, conf_matrix
+            *[topk_stats[c] for c in topk_cols],
+            report[class_name]['precision'], report[class_name]['recall'],
+            report[class_name]['f1-score'], report[class_name]['support'],
+            conf_matrix
         ]
 
     report_df = pd.DataFrame.from_dict(
         report_dict, orient='index',
         columns=['run_name', 'RF_parameters', 'accuracy', 'accuracy_std',
+                 *topk_cols,
                  'precision', 'recall', 'f1', 'support', 'conf_matrix']
     ).reset_index(names='biome')
     report_df.to_csv(report_out_path, sep='\t', mode='a', index=False,
-                      header=not report_out_path.exists())
+                     header=not report_out_path.exists())
 
     # --- CREATE AN OUTPUT FILE FOR THE IMPORTANT FEATURES ---
-    # feature | gini_imp | run_name, where gini_imp is the mean gini
-    # importance across the 5 CV folds
+    # feature | gini_imp | run_name, where gini_imp is the mean gini importance across the 5 CV folds
     features_df = (
         gini_folds_df[['gini_mean']]
         .rename(columns={'gini_mean': 'gini_imp'})
         .reset_index(names='feature')
     )
     features_df['run_name'] = run_name
-    print(features_df)
-
     features_df.to_csv(features_out_path, sep='\t', mode='a', index=False,
-                        header=not features_out_path.exists())
+                       header=not features_out_path.exists())
+
+    # --- SEPARATE FILE WITH THE PER-FOLD IMPORTANCES ---
+    # feature | fold_0 ... fold_4 | gini_mean | gini_std
+    folds_out_path = output_dir.joinpath(f"{run_name}_Feature_importance_folds.tsv")
+    gini_folds_df.reset_index(names='feature').to_csv(folds_out_path, sep='\t', index=False)
 
     # --- CREATE AN OUTPUT FILE FOR DATA DF ---
-    data_df_merged.to_csv(data_df_out_path, sep='\t')
-
+    # full data (all sequences, not downsampled): gene | features | biome
+    data_df_merged.to_csv(data_df_out_path, sep='\t')    
     return
 
 
@@ -361,13 +381,11 @@ if __name__ == '__main__':
 
     data_df_merged, num_features, feature_names = parse_seqs_and_metadata(fasta_path, metadata_path)
 
-    best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df = run_the_classifier(
-        data_df_merged, num_features, feature_names
-    )
+    best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df, topk_stats = run_the_classifier(
+        data_df_merged, num_features, feature_names)
 
     create_output_files(
         data_df_merged, group_name, output_dir,
-        best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df
-    )
+        best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df, topk_stats)
 
     print(f"{group_name} finished... Model accuracy: {accuracy:.4f} (+/- {accuracy_std:.4f})")

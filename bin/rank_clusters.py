@@ -26,7 +26,8 @@ import pandas as pd
 from Bio import SeqIO
 
 UNINFORMATIVE = ("hypothetical", "unknown function", "uncharacterized", "uncharacterised")
-METRICS = ["accuracy", "accuracy_std", "precision", "recall", "f1", "support"]
+METRICS = ["top100_overlap", "top100_intersection", "top100_union",
+           "accuracy", "accuracy_std", "precision", "recall", "f1", "support"]
 
 
 def is_informative(desc):
@@ -63,11 +64,12 @@ def cluster_annotation(fasta):
 def read_report(report):
     """All rows (one per biome) of one RF report, with biome + metric columns."""
     df = pd.read_csv(report, sep="\t")      # quoted multi-line fields (RF_parameters, conf_matrix) are fine
-    missing = [c for c in ["biome"] + METRICS if c not in df.columns]
-    if missing:
-        raise ValueError(f"missing columns {missing}")
+    if "biome" not in df.columns:
+        raise ValueError("missing column 'biome'")
+    for m in METRICS:                       # reports from older runs have no top100 columns
+        if m not in df.columns:
+            df[m] = float("nan")
     return df[["biome"] + METRICS]
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -109,15 +111,19 @@ def main():
     ranking = pd.DataFrame(rows)
     ranking[METRICS] = ranking[METRICS].apply(pd.to_numeric, errors="coerce")
 
-    # sort: clusters by accuracy (highest first); the biome rows of a cluster stay together
-    ranking = ranking.sort_values(["accuracy", "cluster", "biome"],
-                                  ascending=[False, True, True], na_position="last")
+    # rank clusters by top-100 feature stability, then accuracy; biome rows of a cluster stay together
+    ranking = ranking.sort_values(["top100_overlap", "accuracy", "cluster", "biome"],
+                                  ascending=[False, False, True, True], na_position="last")
 
-    for m in ["accuracy", "accuracy_std", "precision", "recall", "f1"]:
+    for m in ["top100_overlap", "accuracy", "accuracy_std", "precision", "recall", "f1"]:
         ranking[m] = ranking[m].round(3)
-    ranking["support"] = ranking["support"].astype("Int64")   # 173.0 -> 173, empty stays empty
+    for m in ["top100_intersection", "top100_union", "support"]:
+        ranking[m] = ranking[m].astype("Int64")
 
-    ranking = ranking[["cluster", "annotation", "biome"] + METRICS +
+    ranking.insert(0, "rank", ranking["cluster"].map(
+        {c: i + 1 for i, c in enumerate(ranking["cluster"].drop_duplicates())}))
+
+    ranking = ranking[["rank", "cluster", "annotation", "biome"] + METRICS +
                       ["n_sequences", "n_annotated", "annotation_share", "other_annotations"]]
     ranking.to_csv(args.output, sep="\t", index=False)
 
@@ -125,14 +131,11 @@ def main():
     n_no_rf = ranking.loc[ranking["accuracy"].isna(), "cluster"].nunique()
     print(f"Clusters ranked: {n_clusters} ({n_no_rf} without RF result, listed last)", file=sys.stderr)
     print("Top 10 clusters:", file=sys.stderr)
-    for cluster in ranking["cluster"].drop_duplicates().head(10):
-        sub = ranking[ranking["cluster"] == cluster]
-        per_biome = ", ".join(
-            f"{str(r['biome']).split(';')[-1]}: P={r['precision']} R={r['recall']} F1={r['f1']} n={r['support']}"
-            for _, r in sub.iterrows())
-        print(f"{cluster} | {sub['annotation'].iloc[0]} | acc={sub['accuracy'].iloc[0]} | {per_biome}",
+    print("\t".join(["rank", "cluster", "annotation", "biome"] + METRICS), file=sys.stderr)
+    top10 = ranking["cluster"].drop_duplicates().head(10)
+    for _, r in ranking[ranking["cluster"].isin(top10)].iterrows():
+        print("\t".join(str(r[c]) for c in ["rank", "cluster", "annotation", "biome"] + METRICS),
               file=sys.stderr)
-
-
+        
 if __name__ == "__main__":
     main()
