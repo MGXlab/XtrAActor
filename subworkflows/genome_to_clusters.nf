@@ -39,7 +39,13 @@ workflow GENOME_TO_CLUSTERS {
     MMSEQ2(proteins_for_clustering, params.id, params.cov)
     ORTHOGROUPS(MMSEQ2.out.tsv, proteins_for_clustering, metadata_ch)
 
+    // for SINGLE_BIOME_ANALYSIS: dereplication tables (empty list without dereplication)
+    derep_tsv_ch = params.dereplicate ? MMSEQ2_DEREP.out.tsv.collect() : Channel.value([])
+
     emit:
+    proteins    = annot.proteins        // tuple(biome_set, proteins.faa), before dereplication
+    cluster_tsv = MMSEQ2.out.tsv        // mmseq2_cluster.tsv of the 50/50 clustering
+    derep_tsv   = derep_tsv_ch
     fastas      = ORTHOGROUPS.out.cluster_fastas
                     .flatten()
                     .map { f -> tuple(f.baseName, f) }

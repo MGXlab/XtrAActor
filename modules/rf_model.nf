@@ -21,6 +21,7 @@ process RF_MODEL {
     output:
     tuple val(cluster_name), path("RF_results/*_Feature_importance.tsv"),  emit: features
     tuple val(cluster_name), path("RF_results/*_RandomForest_Report.tsv"), emit: reports
+    tuple val(cluster_name), path("RF_results/*_Feature_importance_folds.tsv"), emit: features_folds
     tuple val(cluster_name), path("RF_results/*_data_df.tsv"),             emit: data_df
     path "${cluster_name}_rf_model.log", emit: log
 

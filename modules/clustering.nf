@@ -63,10 +63,11 @@ process ORTHOGROUPS {
     path proteins_fasta
     path metadata_file
 
-    output:
+output:
     path "cluster_fastas/*.fasta",       emit: cluster_fastas
     path "cluster_biomes/*_biome.tsv",   emit: cluster_biomes
     path "cluster_size_histogram.png",   emit: size_hist
+    path "single_biome_clusters.tsv",    emit: single_biome
     path "orthogroups.log",              emit: log
 
     script:
@@ -74,6 +75,7 @@ process ORTHOGROUPS {
     source ${params.conda_sh_ri}
     conda activate working-env
     # random comment line
+    # another random comment line
 
     python3 ${projectDir}/bin/orthogroups_sel_by_biome.py \\
         ${cluster_tsv} ${proteins_fasta} ${metadata_file} \\
