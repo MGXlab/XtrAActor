@@ -7,7 +7,7 @@ import matplotlib
 matplotlib.use("Agg")            # no display on the cluster nodes
 import matplotlib.pyplot as plt
 
-MIN_PER_BIOME = 30      # a cluster is written for RF only if EACH biome in the metadata has at least this many members
+MIN_PER_BIOME = 20      # a cluster is written for RF only if EACH biome in the metadata has at least this many members
 MIN_SINGLE_BIOME = 30   # a single-biome cluster is reported only if its one biome has at least this many members
 SINGLE_BIOME_OUT = "single_biome_clusters.tsv"
 

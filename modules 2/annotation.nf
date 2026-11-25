@@ -1,5 +1,7 @@
-// Both processes emit proteins renamed to <genome_id>_<n>, so the downstream
-// protein IDs look the same whichever tool produced them.
+// Protein IDs are <genome>_CDS_<n> for both tools, so downstream steps can take the genome
+// from the part before "_CDS_":
+//   PHAROKKA: one phage contig = one genome, the genome is the contig name
+//   BAKTA:    one input file  = one genome (any number of contigs), the genome is the file name
 // TODO Remember to adjust pharokka_args to default to --fast for large number of sequences
 
 process PHAROKKA {
@@ -44,26 +46,32 @@ process BAKTA {
     output:
     tuple val(genome_id), path("${genome_id}_bakta"),         emit: annotation
     tuple val(genome_id), path("${genome_id}_proteins.faa"),  emit: proteins
+    path("${genome_id}_protein2contig.tsv"),                  emit: protein2contig
     path("${genome_id}_bakta.log"),                           emit: log
 
     script:
     def db = params.bakta_db ? "--db ${params.bakta_db}" : ''
     """
-    source ${params.conda_sh_ri}
+    source /vast/groups/VEO/tools/miniconda3_2024/etc/profile.d/conda.sh
     conda activate ${params.bakta_env}
 
     bakta ${db} --output ${genome_id}_bakta --prefix ${genome_id} \\
         --threads ${task.cpus} --force ${params.bakta_args} ${genome} \\
         > ${genome_id}_bakta.log 2>&1
 
-    # locus tag -> contig from the .tsv, then rename proteins to <contig>_CDS_<n>
-    awk -F'\\t' '
+    # rename proteins to <genome_id>_CDS_<n> (one input file = one genome, numbered in file order)
+    # header text = product only; protein -> contig + locus tag goes to <genome_id>_protein2contig.tsv
+    awk -F'\\t' -v g="${genome_id}" -v map="${genome_id}_protein2contig.tsv" '
+        BEGIN { print "protein\\tcontig\\tlocus_tag" > map }
         NR == FNR { if (\$0 !~ /^#/) contig[\$6] = \$1; next }
         /^>/ {
             split(substr(\$0, 2), h, " "); id = h[1]
-            c = (id in contig) ? contig[id] : "unknown_contig"
-            n[c]++
-            printf(">%s_CDS_%04d %s\\n", c, n[c], substr(\$0, 2)); next
+            product = substr(\$0, length(id) + 3)
+            n++
+            pid = sprintf("%s_CDS_%05d", g, n)
+            printf(">%s %s\\n", pid, product)
+            print pid "\\t" ((id in contig) ? contig[id] : "unknown_contig") "\\t" id > map
+            next
         }
         { print }
     ' ${genome_id}_bakta/${genome_id}.tsv ${genome_id}_bakta/${genome_id}.faa > ${genome_id}_proteins.faa

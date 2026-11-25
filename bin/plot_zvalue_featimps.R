@@ -4,13 +4,20 @@ library(ggrepel)
 
 args <- commandArgs(trailingOnly = TRUE)
 
-if (length(args) < 2) {
-  stop("Usage: Rscript phyloglm.R <data_df.tsv> <tree_file.nwk> [output_file]")
+if (length(args) < 5) {
+  stop("Usage: Rscript plot_zvalue_featimps.R <phyloglm.csv> <Feature_importance.tsv> <output.png> <biome1> <biome2>")
 }
 
 phyloglm_results <- args[1]
 biome_file <- args[2]
 plot_file <- args[3]
+
+# biome2 is the target biome (coded 1 in create_dataset_phyloglm.py --target_biome), so a
+# positive z-value means the feature goes with biome2, a negative one with biome1.
+# Labels: the part after the last ';' (e.g. "Environmental;Aquatic;Freshwater;Lake" -> "Lake")
+short_label <- function(x) trimws(sub(".*;", "", x))
+biome1_label <- short_label(args[4])
+biome2_label <- short_label(args[5])
 
 df_phylo_res <- read.csv(phyloglm_results)
 df_feat_imp <- read.csv(biome_file, sep='\t')
@@ -41,28 +48,28 @@ df_merged <- df_merged %>%
     aa_letter = toupper(regmatches(feature, regexpr("[A-Za-z]+$", feature))),  # grabs trailing letters
     aa_group  = ifelse(aa_letter %in% names(aa_to_group),
                        aa_to_group[aa_letter], "Other"),
-    biome   = ifelse(z.value >= 0, "Ocean", "Lake")
+    biome   = ifelse(z.value >= 0, biome2_label, biome1_label)
   )
 
-get_z_threshold <- function(z, padj, side = c("pos", "neg")) {
-  side <- match.arg(side)
-  keep <- !is.na(padj) & !is.na(z) & (if (side == "pos") z > 0 else z < 0)
-  d <- data.frame(z = z[keep], padj = padj[keep])
-  # need at least two DIFFERENT padj values to interpolate
-  if (length(unique(d$padj)) < 2) return(NA_real_)
-  approx(x = d$padj, y = d$z, xout = 0.01, rule = 2, ties = mean)$y
-}
+# Significance threshold: padj < 0.05
+padj_cutoff <- 0.05
 
-z_thresh_pos <- get_z_threshold(df_merged$z.value, df_merged$padj, "pos")
-z_thresh_neg <- get_z_threshold(df_merged$z.value, df_merged$padj, "neg")
+# z-value at which padj is exactly 0.05 (Benjamini-Hochberg), same as in phyloglm_merge.R:
+# with m tested features and k of them significant, a feature needs p <= k * 0.05 / m,
+# i.e. a feature with exactly this p-value gets padj = 0.05. This p-value is converted to |z|
+# (phyloglm p-values are two-sided normal: p = 2 * pnorm(-|z|)).
+# If no feature is significant, k = 1 is used: the z-value a single feature would need.
+m <- sum(!is.na(df_phylo_res$p.value))
+k <- max(sum(!is.na(df_phylo_res$padj) & df_phylo_res$padj < padj_cutoff), 1)
+z_cutoff <- if (m > 0) qnorm(1 - (k * padj_cutoff / m) / 2) else NA_real_
 
 p <- ggplot(df_merged, aes(x = z.value, y =gini_imp , label = feature,
                            fill = aa_group, color = aa_group, shape = biome)) +
   geom_point(alpha = 0.5, size = 2) +
   geom_point(
-    data = subset(df_merged, gini_imp >= 0.0005 & padj <= 0.01), size = 4,alpha=0.9,key_glyph="rect") +
+    data = subset(df_merged, gini_imp >= 0.0005 & padj < padj_cutoff), size = 4,alpha=0.9,key_glyph="rect") +
   geom_text_repel(
-    data = subset(df_merged, gini_imp >= 0.006 & padj <= 0.01),
+    data = subset(df_merged, gini_imp >= 0.006 & padj < padj_cutoff),
     size = 5,
     color = "black",
     box.padding = 0.5,      # padding around each label
@@ -71,16 +78,15 @@ p <- ggplot(df_merged, aes(x = z.value, y =gini_imp , label = feature,
     segment.color = "grey50" # color of the line connecting label to point
   )+
   geom_hline(yintercept = 0.001, linetype = "dashed", color = "black") +
-  geom_vline(xintercept =  z_thresh_pos, linetype = "dashed", color = "black") +
-  geom_vline(xintercept = z_thresh_neg, linetype = "dashed", color = "black") +
+  { if (!is.na(z_cutoff)) geom_vline(xintercept = c(-z_cutoff, z_cutoff),
+                                     linetype = "dashed", color = "black") } +
   scale_fill_manual(values = group_colors, name = "AA Group", 
-                    breaks=c("Positive charged", "Negative charged","Polar uncharged","Hydrophobic","Aromatic","Other"),
-                    labels=c("Positive charged", "Negative charged","Polar uncharged","Hydrophobic","Aromatic","Other") ) +
+                    breaks = names(aa_groups), labels = names(aa_groups)) +
   scale_color_manual(values = group_colors,
                      guide=guide_legend(theme = theme(
                        legend.position = "None"
                        ))) +
-  scale_shape_manual(values = c("Ocean" = 24, "Lake" = 25),
+  scale_shape_manual(values = setNames(c(24, 25), c(biome2_label, biome1_label)),
                      name = "Biome Indicator") +
   theme_minimal() +
   theme(

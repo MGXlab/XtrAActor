@@ -16,6 +16,11 @@ updates on this script:
   match the metadata's gene column exactly (no partial/fallback matching)
 - RF training is still parallelized (n_jobs=-1) in both the hyperparameter
   search and the per-fold models
+- feature stability: the fixed top-100 overlap is replaced by an ELBOW-based
+  overlap. Each fold picks its own "important" features from the elbow of its
+  sorted importance curve. The features shared by all folds are normalized
+  by the number of features above the elbow per fold, so groups with
+  different numbers of features can be compared.
 """
 
 
@@ -76,25 +81,77 @@ def downsample_majority(data_df_merged, label_col='biome', random_state=42):
     
     return balanced
 
-TOP_K = 100   # number of top features per fold used for the stability statistic
 
-
-def top_feature_overlap(fold_importances, k=TOP_K):
+def elbow_cutoff(sorted_importances):
     """
-    Stability of the top-k features across CV folds.
-    Per fold: the k most important features (importance > 0).
-    Returns |intersection of all folds| / |union of all folds|, plus both sizes.
-    1.0 = every fold picked exactly the same top-k features; close to 0 = little agreement.
+    Number of features above the elbow of an importance curve.
+
+    sorted_importances: importances sorted in DESCENDING order.
+    Rank and importance are both rescaled to 0-1, a straight line is drawn
+    from the first (most important) to the last point, and the elbow is the
+    point where the curve sags furthest below that line (max-distance /
+    "kneedle" method). Everything up to and including the elbow is kept.
+
+    Returns all features if there are fewer than 3 or the curve is flat
+    (no elbow can be defined).
+    """
+    y = np.asarray(sorted_importances, dtype=float)
+    n = len(y)
+    if n < 3 or y[0] == y[-1]:
+        return n
+
+    x = np.linspace(0, 1, n)                       # rank, rescaled to 0-1
+    y_norm = (y - y[-1]) / (y[0] - y[-1])          # importance, rescaled to 1-0
+    dist_below_line = (1 - x) - y_norm             # line from (0,1) to (1,0) minus the curve
+    return int(np.argmax(dist_below_line)) + 1
+
+
+def elbow_feature_overlap(fold_importances):
+    """
+    Stability of the important features across CV folds, with the number of
+    important features chosen per fold by the elbow of that fold's importance
+    curve (see elbow_cutoff) instead of a fixed top-k.
+
+    Per fold: features with importance > 0, sorted descending, cut at the elbow.
+    The shared features (above the elbow in EVERY fold) are then normalized by
+    the number of features above the elbow in each fold:
+
+        overlap of fold i = |shared features| / |features above elbow in fold i|
+
+    i.e. the fraction of a fold's important features that every other fold
+    also found. 1.0 = all folds picked exactly the same features; 0 = no
+    feature was picked by all folds.
+
+    Returns (stats, n_folds_selected):
+      stats (dict)
+        elbow_overlap           mean of the per-fold overlaps
+        elbow_overlap_per_fold  the overlap of each fold
+        elbow_intersection      number of features above the elbow in every fold
+        elbow_k_per_fold        number of features above the elbow in each fold
+      n_folds_selected (Series)
+        per feature: in how many folds it was above the elbow
     """
     top_sets = []
     for imp in fold_importances:
         nonzero = imp[imp > 0].sort_values(ascending=False)
+        k = elbow_cutoff(nonzero.values)
         top_sets.append(set(nonzero.index[:k]))
 
-    union = set.union(*top_sets)
     intersection = set.intersection(*top_sets)
-    ratio = len(intersection) / len(union) if union else float("nan")
-    return ratio, len(intersection), len(union)
+    per_fold = [len(intersection) / len(s) if s else float("nan") for s in top_sets]
+
+    stats = {
+        "elbow_overlap": float(np.mean(per_fold)),
+        "elbow_overlap_per_fold": ",".join(f"{v:.3f}" for v in per_fold),
+        "elbow_intersection": len(intersection),
+        "elbow_k_per_fold": ",".join(str(len(s)) for s in top_sets),
+    }
+
+    n_folds_selected = pd.Series(
+        {f: sum(f in s for s in top_sets) for f in fold_importances[0].index},
+        name="n_folds_selected"
+    )
+    return stats, n_folds_selected
 
 
 def parse_seqs_and_metadata(fasta_path, metadata_path):
@@ -192,7 +249,8 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
     downsampled (see downsample_majority / MAX_RATIO); every test part keeps
     the real class mix (not downsampled - ratio of the real data stays).
     Performance is reported as balanced accuracy.
-    Feature stability: overlap of the top-100 features across the 5 folds.
+    Feature stability: overlap across the 5 folds of the features above each
+    fold's importance elbow (see elbow_feature_overlap).
     """
 
     X = data_df_merged.iloc[:, 0:num_features]     # features
@@ -268,16 +326,19 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
         fold_imp = pd.Series(fold_clf.feature_importances_, index=feature_names, name=f"fold_{fold_idx}")
         fold_importances.append(fold_imp)
 
-    # --- feature stability: top-k overlap across the 5 folds ---
-    topk_overlap, topk_intersection, topk_union = top_feature_overlap(fold_importances, TOP_K)
-    print(f"Top-{TOP_K} feature overlap across folds: {topk_intersection} shared / "
-          f"{topk_union} total = {topk_overlap:.3f}")
+    # --- feature stability: overlap of the above-elbow features across the 5 folds ---
+    stability_stats, n_folds_selected = elbow_feature_overlap(fold_importances)
+    print(f"Elbow feature overlap across folds: {stability_stats['elbow_intersection']} shared features; "
+          f"features above elbow per fold: {stability_stats['elbow_k_per_fold']}; "
+          f"overlap per fold: {stability_stats['elbow_overlap_per_fold']}; "
+          f"mean: {stability_stats['elbow_overlap']:.3f}")
 
     # --- aggregate Gini importances across folds ---
     gini_folds_df = pd.concat(fold_importances, axis=1)  # columns: fold_0 ... fold_4
     fold_cols = [c for c in gini_folds_df.columns if c.startswith('fold_')]
     gini_folds_df['gini_mean'] = gini_folds_df[fold_cols].mean(axis=1)
     gini_folds_df['gini_std'] = gini_folds_df[fold_cols].std(axis=1)
+    gini_folds_df['n_folds_selected'] = n_folds_selected   # in how many folds the feature was above the elbow
     gini_folds_df = gini_folds_df.sort_values('gini_mean', ascending=False)
 
     # --- aggregate accuracy/report/conf_matrix across folds (pooled OOF) ---
@@ -300,33 +361,28 @@ def run_the_classifier(data_df_merged, num_features, feature_names):
 
     print(f"Number of features: {num_features}")
 
-    topk_stats = {
-        f"top{TOP_K}_overlap": topk_overlap,
-        f"top{TOP_K}_intersection": topk_intersection,
-        f"top{TOP_K}_union": topk_union,
-    }
-    return best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df, topk_stats
+    return best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df, stability_stats
 
 
 def create_output_files(data_df_merged, run_name, output_dir,
                         best_params, accuracy, accuracy_std, report, conf_matrix,
-                        gini_folds_df, topk_stats):
+                        gini_folds_df, stability_stats):
 
     features_out_path = output_dir.joinpath(f"{run_name}_Feature_importance.tsv")
     report_out_path = output_dir.joinpath(f"{run_name}_RandomForest_Report.tsv")
     data_df_out_path = output_dir.joinpath(f"{run_name}_data_df.tsv")
 
     # --- CREATE AN OUTPUT FILE FOR RF MODEL REPORT ---
-    # one row per biome; accuracy and top-k overlap are model-level (same in both rows)
+    # one row per biome; accuracy and elbow overlap are model-level (same in every row)
     excluded_keys = {'accuracy', 'macro avg', 'weighted avg', 'micro avg'}
     class_names = [k for k in report.keys() if k not in excluded_keys]
 
-    topk_cols = list(topk_stats.keys())
+    stability_cols = list(stability_stats.keys())
     report_dict = {}
     for class_name in class_names:
         report_dict[class_name] = [
             run_name, best_params, accuracy, accuracy_std,
-            *[topk_stats[c] for c in topk_cols],
+            *[stability_stats[c] for c in stability_cols],
             report[class_name]['precision'], report[class_name]['recall'],
             report[class_name]['f1-score'], report[class_name]['support'],
             conf_matrix
@@ -335,7 +391,7 @@ def create_output_files(data_df_merged, run_name, output_dir,
     report_df = pd.DataFrame.from_dict(
         report_dict, orient='index',
         columns=['run_name', 'RF_parameters', 'accuracy', 'accuracy_std',
-                 *topk_cols,
+                 *stability_cols,
                  'precision', 'recall', 'f1', 'support', 'conf_matrix']
     ).reset_index(names='biome')
     report_df.to_csv(report_out_path, sep='\t', mode='a', index=False,
@@ -353,7 +409,7 @@ def create_output_files(data_df_merged, run_name, output_dir,
                        header=not features_out_path.exists())
 
     # --- SEPARATE FILE WITH THE PER-FOLD IMPORTANCES ---
-    # feature | fold_0 ... fold_4 | gini_mean | gini_std
+    # feature | fold_0 ... fold_4 | gini_mean | gini_std | n_folds_selected
     folds_out_path = output_dir.joinpath(f"{run_name}_Feature_importance_folds.tsv")
     gini_folds_df.reset_index(names='feature').to_csv(folds_out_path, sep='\t', index=False)
 
@@ -381,11 +437,11 @@ if __name__ == '__main__':
 
     data_df_merged, num_features, feature_names = parse_seqs_and_metadata(fasta_path, metadata_path)
 
-    best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df, topk_stats = run_the_classifier(
+    best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df, stability_stats = run_the_classifier(
         data_df_merged, num_features, feature_names)
 
     create_output_files(
         data_df_merged, group_name, output_dir,
-        best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df, topk_stats)
+        best_params, accuracy, accuracy_std, report, conf_matrix, gini_folds_df, stability_stats)
 
     print(f"{group_name} finished... Model accuracy: {accuracy:.4f} (+/- {accuracy_std:.4f})")

@@ -27,6 +27,7 @@ process RF_MODEL {
 
     script:
     """
+    # random comment here 
     source ${params.conda_sh_ri}
     conda activate working-env
 

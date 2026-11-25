@@ -14,8 +14,6 @@
 #                       once in phyloglm_single_biome_report.R.
 #
 # Same direction as phyloglm_fit.R (biome ~ feature). Method is logistic_MPLE (Firth-penalised)
-# instead of logistic_IG10: a single-biome cluster never occurs in the other biome, so the data
-# are perfectly separated and the unpenalised likelihood has no finite maximum.
 
 suppressPackageStartupMessages({
   library(ape)

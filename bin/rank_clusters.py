@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """
-Rank clusters by RF accuracy (highest first) and attach a functional annotation
-taken from the headers of each cluster fasta.
+Rank clusters by RF feature stability and accuracy (highest first) and attach a functional
+annotation taken from the headers of each cluster fasta.
 
 One output row per cluster AND biome (the RF report has one row per biome):
-  cluster | annotation | biome | accuracy | accuracy_std | precision | recall | f1 | support | ...
+  rank | cluster | annotation | biome | elbow_overlap | ... | accuracy | accuracy_std | precision | recall | f1 | support | ...
+
+Feature stability comes from rf_model_v3.py (elbow-based overlap of the important features
+across the 5 CV folds):
+  elbow_overlap           mean fraction of each fold's above-elbow features found by all folds
+  elbow_intersection      number of features above the elbow in every fold
+  elbow_overlap_per_fold  the overlap of each fold
+  elbow_k_per_fold        number of features above the elbow in each fold
 
 Header format of the cluster fastas: ><protein_id> <annotation>, e.g.
   >NODE_5731_length_13416_cov_14.9073||full_CDS_0010 glycoside hydrolase
@@ -26,8 +33,13 @@ import pandas as pd
 from Bio import SeqIO
 
 UNINFORMATIVE = ("hypothetical", "unknown function", "uncharacterized", "uncharacterised")
-METRICS = ["top100_overlap", "top100_intersection", "top100_union",
+
+# numeric metrics from the RF report
+NUMERIC = ["elbow_overlap", "elbow_intersection",
            "accuracy", "accuracy_std", "precision", "recall", "f1", "support"]
+# per-fold details, comma separated text
+PER_FOLD = ["elbow_overlap_per_fold", "elbow_k_per_fold"]
+METRICS = NUMERIC + PER_FOLD
 
 
 def is_informative(desc):
@@ -66,10 +78,14 @@ def read_report(report):
     df = pd.read_csv(report, sep="\t")      # quoted multi-line fields (RF_parameters, conf_matrix) are fine
     if "biome" not in df.columns:
         raise ValueError("missing column 'biome'")
-    for m in METRICS:                       # reports from older runs have no top100 columns
+    if "elbow_overlap" not in df.columns:
+        print(f"WARNING: {Path(report).name} has no elbow columns (made by an older rf_model version?)",
+              file=sys.stderr)
+    for m in METRICS:
         if m not in df.columns:
             df[m] = float("nan")
     return df[["biome"] + METRICS]
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -109,15 +125,15 @@ def main():
         sys.exit("ERROR: no cluster fasta files found")
 
     ranking = pd.DataFrame(rows)
-    ranking[METRICS] = ranking[METRICS].apply(pd.to_numeric, errors="coerce")
+    ranking[NUMERIC] = ranking[NUMERIC].apply(pd.to_numeric, errors="coerce")
 
-    # rank clusters by top-100 feature stability, then accuracy; biome rows of a cluster stay together
-    ranking = ranking.sort_values(["top100_overlap", "accuracy", "cluster", "biome"],
+    # rank clusters by feature stability (elbow overlap), then accuracy; biome rows of a cluster stay together
+    ranking = ranking.sort_values(["elbow_overlap", "accuracy", "cluster", "biome"],
                                   ascending=[False, False, True, True], na_position="last")
 
-    for m in ["top100_overlap", "accuracy", "accuracy_std", "precision", "recall", "f1"]:
+    for m in ["elbow_overlap", "accuracy", "accuracy_std", "precision", "recall", "f1"]:
         ranking[m] = ranking[m].round(3)
-    for m in ["top100_intersection", "top100_union", "support"]:
+    for m in ["elbow_intersection", "support"]:
         ranking[m] = ranking[m].astype("Int64")
 
     ranking.insert(0, "rank", ranking["cluster"].map(
@@ -131,11 +147,12 @@ def main():
     n_no_rf = ranking.loc[ranking["accuracy"].isna(), "cluster"].nunique()
     print(f"Clusters ranked: {n_clusters} ({n_no_rf} without RF result, listed last)", file=sys.stderr)
     print("Top 10 clusters:", file=sys.stderr)
-    print("\t".join(["rank", "cluster", "annotation", "biome"] + METRICS), file=sys.stderr)
+    shown = ["rank", "cluster", "annotation", "biome"] + NUMERIC
+    print("\t".join(shown), file=sys.stderr)
     top10 = ranking["cluster"].drop_duplicates().head(10)
     for _, r in ranking[ranking["cluster"].isin(top10)].iterrows():
-        print("\t".join(str(r[c]) for c in ["rank", "cluster", "annotation", "biome"] + METRICS),
-              file=sys.stderr)
-        
+        print("\t".join(str(r[c]) for c in shown), file=sys.stderr)
+
+
 if __name__ == "__main__":
     main()

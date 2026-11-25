@@ -100,7 +100,6 @@ process PHYLOGLM_FIT_CHUNK {
     script:
     """
     # random comment
-    # another random comment
     source /vast/ri65fin/miniconda3/etc/profile.d/conda.sh
     conda activate phyloglm
 
@@ -169,6 +168,7 @@ process PLOT_ZVALUE {
     conda activate phyloglm
 
     Rscript ${params.shared_bin}/plot_zvalue_featimps.R \\
-        ${csv} ${feat_imp} ${cluster_name}_zvalue_plot.png > ${cluster_name}_zvalue.log 2>&1
+        ${csv} ${feat_imp} ${cluster_name}_zvalue_plot.png "${params.biome1}" "${params.biome2}" \\
+        > ${cluster_name}_zvalue.log 2>&1
     """
 }

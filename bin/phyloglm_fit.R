@@ -93,7 +93,7 @@ fit_phyloglm <- function(feature) {
       formula = y ~ x,
       data = dat,
       phy = tree,
-      method = "logistic_IG10",
+      method = "logistic_MPLE",
       boot = 2
     ),
     error = function(e) list(coefficients = NA)
