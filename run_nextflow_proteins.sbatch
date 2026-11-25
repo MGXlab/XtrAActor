@@ -7,15 +7,15 @@
 #SBATCH --mem=15G
 #SBATCH --time 3:00:00
 
-source /vast/ri65fin/miniconda3/etc/profile.d/conda.sh
+source /path/to/miniconda3/.../conda.sh
 
 conda activate XtrAActor_env
 
 # nextflow run pipeline_v2.nf -params-file user_inputs.yaml
 
 nextflow run -resume pipeline_merged.nf \
-  --fasta_dir  /vast/ri65fin/nextflow_AAcidX/test_data/genes_test/fastas\
-  --metadata_dir /vast/ri65fin/nextflow_AAcidX/test_data/genes_test/metadata \
+  --fasta_dir  /genes_test/fastas\
+  --metadata_dir genes_test/metadata \
   --biome1 "Environmental;Aquatic;Freshwater;Lake" \
   --biome2 "Environmental;Aquatic;Thermal springs;Hot (42-90C)" \
   --colour1 "#1f77b4" \

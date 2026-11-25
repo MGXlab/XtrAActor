@@ -11,18 +11,18 @@
 # It must run longer than the whole pipeline, otherwise all running tasks are orphaned.
 
 
-source /vast/ri65fin/miniconda3/etc/profile.d/conda.sh
+source /path/to/miniconda3/.../conda.sh
 conda activate nf-env
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ from genomes ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 
 nextflow run ../main.nf -resume \
   -c ../nextflow.config \
   --entry_point genome \
-  --genome_dir /vast/ri65fin/nextflow_AAcidx_v2/genomes_test_run_3/data/fastas \
-  --metadata_file /vast/ri65fin/nextflow_AAcidx_v2/genomes_test_run_3/data/metadata/freshwater_alkaline_metadata.tsv \
+  --genome_dir genomes_test_run_3/data/fastas \
+  --metadata_file genomes_test_run_3/data/metadata/freshwater_alkaline_metadata.tsv \
   --genome_type phage \
   --gene_predictor prodigal-gv \
-  --pharokka_db "/vast/ri65fin/pharokka_db" \
+  --pharokka_db "/path/to/pharokka_db" \
   --id 0.5 --cov 0.5 \
   --biome1  "Environmental;Aquatic;Freshwater;Lake" \
   --biome2  "Environmental;Aquatic;Non-marine Saline and Alkaline;Alkaline" \
