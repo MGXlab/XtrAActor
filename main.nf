@@ -135,9 +135,13 @@ if (params.help) {
                                distances, with pyseer's linear mixed model
         --enrich_distances     Without a tree: 'viptreegen', 'mash' or 'dice'
                                (default: viptreegen for phages, mash for non-phage)
+                               The --genome_tree route doesn't use axes at all: pyseer's mixed model takes the whole tree as the correction, so there's no number of dimensions to choose. 
+                               With the distance routes (mash, ViPTreeGen, Dice), choosing the number of pyseer_max_dimensions is the trade-off you have to make.
         --precomputed_genomes  Genome fastas of the --precomputed_proteins biome(s) (viptreegen / mash)
         --pyseer_min_af / --pyseer_max_af   pyseer frequency filter (default 0.01 / 0.99)
-        --pyseer_max_dimensions  MDS dimensions for the distance matrix (default 10)
+        --pyseer_max_dimensions  MDS dimensions for the distance matrix (default 10); decide based on the number of genomes you have. 
+                                 A small number = the relatedness is only roughly corrected
+                                 large number = the axes tart to describe individual genomes (you will get false negatives)
         --enrich_alpha         Significance level (default 0.05)
         --pyseer_env / --r_env                      conda environments (in --conda_sh_ri)
         --viptreegen_bin / --viptreegen_args        ViPTreeGen executable / extra arguments

@@ -67,7 +67,7 @@ def plot_report(df, biome1, biome2, colour1, colour2):
 
 def plot_precision_vs_recall(df, biome1, biome2, colour1, colour2):
 
-    fig, ax = plt.subplots(figsize=(7,5))
+    fig, ax = plt.subplots(figsize=(30,10))
 
     texts = []  # To store label objects for adjustText
 

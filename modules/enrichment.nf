@@ -43,9 +43,9 @@ process ENRICH_INPUTS {
     source ${params.conda_sh_ri}
     conda activate working-env
 
-    cat <<'RF_CLUSTERS' > rf_clusters.txt
-    ${rf_list}
-    RF_CLUSTERS
+cat <<'RF_CLUSTERS' > rf_clusters.txt
+${rf_list}
+RF_CLUSTERS
 
     python3 ${projectDir}/bin/enrichment_inputs.py presence \\
         --clusters ${cluster_tsv} --metadata ${metadata_file} \\
@@ -146,7 +146,7 @@ process VIPTREEGEN {
 
     # back to the pyseer env for renaming the matrix to genome IDs
     conda deactivate
-    
+
     source ${params.conda_sh_ri}
     conda activate working-env
 

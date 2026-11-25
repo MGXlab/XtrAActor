@@ -51,8 +51,8 @@ process PLOT_CLUSTER {
     errorStrategy 'retry'
     maxRetries 2
 
-    publishDir "${params.out_dir}/plots", mode: 'copy',
-        saveAs: { fn -> fn.endsWith('.log') ? "logs/${fn}" : fn }
+    // plots/individual_cluster_plots/<cluster>/ (plots and the log of that cluster)
+    publishDir "${params.out_dir}/plots/individual_cluster_plots/${cluster_name}", mode: 'copy'
     queue 'standard,short,long,fat'
 
     input:
@@ -114,7 +114,7 @@ process CLUSTER_PROPERTY_PLOTS {
     source ${params.conda_sh_ri}
     conda activate working-env
 
-    python3 ${projectDir}/bin/protein_property_volcano.py RF_results/raw cluster_fastas \\
+    python3 ${projectDir}/bin/plots/plots/protein_property_volcano.py RF_results/raw cluster_fastas \\
         --biome1 "${biome_1}" --biome2 "${biome_2}" \\
         --colour1 "${colour1}" --colour2 "${colour2}" \\
         > cluster_property_plots.log 2>&1
